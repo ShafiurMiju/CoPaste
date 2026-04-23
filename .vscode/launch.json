@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:copaste}",
+            "name": "Debug Copaste",
+            "target": "Copaste",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Copaste"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:copaste}",
+            "name": "Release Copaste",
+            "target": "Copaste",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Copaste"
+        }
+    ]
+}

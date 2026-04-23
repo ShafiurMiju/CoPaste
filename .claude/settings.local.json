@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcode-select -p)",
+      "Bash(swift --version)",
+      "Bash(swift build *)",
+      "Bash(make bundle *)",
+      "Bash(killall Copaste)",
+      "Bash(make install *)",
+      "Bash(open -a Copaste)",
+      "Bash(log show *)",
+      "Bash(/usr/bin/log show *)",
+      "Bash(nohup /Applications/Copaste.app/Contents/MacOS/Copaste)",
+      "Bash(disown)",
+      "Read(//tmp/**)",
+      "Bash(swift tools/make_icon.swift)",
+      "Bash(iconutil -c icns Resources/AppIcon.iconset -o Resources/AppIcon.icns)",
+      "Bash(touch /Applications/Copaste.app)",
+      "Bash(/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f /Applications/Copaste.app)",
+      "Bash(killall Dock)"
+    ]
+  }
+}
