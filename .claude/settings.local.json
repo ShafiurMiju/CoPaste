@@ -17,7 +17,13 @@
       "Bash(iconutil -c icns Resources/AppIcon.iconset -o Resources/AppIcon.icns)",
       "Bash(touch /Applications/Copaste.app)",
       "Bash(/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f /Applications/Copaste.app)",
-      "Bash(killall Dock)"
+      "Bash(killall Dock)",
+      "Bash(osascript -e 'quit app \"Copaste\"')",
+      "Bash(pkill -x Copaste)",
+      "Bash(rm -rf \"/Applications/Copaste.app\")",
+      "Read(//Applications/**)",
+      "Bash(tccutil reset *)",
+      "Bash(make clean *)"
     ]
   }
 }
