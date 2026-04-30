@@ -56,8 +56,14 @@ final class PopupController {
         panel?.orderOut(nil)
     }
 
-    private func show() {
-        previousApp = NSWorkspace.shared.frontmostApplication
+    func show() {
+        // Avoid clobbering the real "previous app" (e.g. Chrome) with our own
+        // app when something brings Copaste forward — like after the edit
+        // window closes. We only update when the frontmost is a different app.
+        let candidate = NSWorkspace.shared.frontmostApplication
+        if candidate?.bundleIdentifier != Bundle.main.bundleIdentifier {
+            previousApp = candidate
+        }
         NSLog("[Copaste] popup.show() previousApp=\(previousApp?.localizedName ?? "nil")")
 
         store.query = ""
@@ -92,7 +98,9 @@ final class PopupController {
             },
             onEdit: { [weak self] clip in
                 self?.close()
-                ClipEditorController.shared.show(clip: clip)
+                ClipEditorController.shared.show(clip: clip, onClose: { [weak self] in
+                    self?.show()
+                })
             }
         )
         let host = NSHostingView(rootView: view)

@@ -7,7 +7,9 @@ final class ClipEditorController {
     private var window: NSWindow?
     var onSave: ((Int64, String) -> Void)?
 
-    func show(clip: Clip) {
+    /// Shows the editor for `clip`. `onClose` fires after either Save or
+    /// Cancel — used by the popup controller to bring the popup back.
+    func show(clip: Clip, onClose: (() -> Void)? = nil) {
         if window == nil { build() }
         guard let w = window else { return }
 
@@ -16,8 +18,12 @@ final class ClipEditorController {
             onSave: { [weak self] newText in
                 self?.onSave?(clip.id, newText)
                 w.close()
+                onClose?()
             },
-            onCancel: { w.close() }
+            onCancel: {
+                w.close()
+                onClose?()
+            }
         )
         let host = NSHostingController(rootView: view)
         w.contentViewController = host

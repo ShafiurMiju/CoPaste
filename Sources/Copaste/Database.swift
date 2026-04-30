@@ -23,6 +23,13 @@ struct Clip: Identifiable, Equatable {
     let isPassword: Bool
 }
 
+struct ClipGroup: Identifiable, Equatable, Hashable {
+    let id: Int64
+    let name: String
+    let createdAt: Date
+    let itemCount: Int
+}
+
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 final class Database {
@@ -71,6 +78,27 @@ final class Database {
         addColumnIfMissing("image_bytes", type: "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("is_password", type: "INTEGER NOT NULL DEFAULT 0")
         exec("CREATE INDEX IF NOT EXISTS idx_clips_kind ON clips(kind);")
+
+        exec("PRAGMA foreign_keys = ON;")
+        exec("""
+            CREATE TABLE IF NOT EXISTS groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL
+            );
+        """)
+        exec("""
+            CREATE TABLE IF NOT EXISTS group_clips (
+                group_id INTEGER NOT NULL,
+                clip_id INTEGER NOT NULL,
+                added_at INTEGER NOT NULL,
+                PRIMARY KEY (group_id, clip_id),
+                FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+                FOREIGN KEY (clip_id)  REFERENCES clips(id)  ON DELETE CASCADE
+            );
+        """)
+        exec("CREATE INDEX IF NOT EXISTS idx_group_clips_group ON group_clips(group_id);")
+        exec("CREATE INDEX IF NOT EXISTS idx_group_clips_clip  ON group_clips(clip_id);")
     }
 
     private func addColumnIfMissing(_ name: String, type: String) {
@@ -174,6 +202,8 @@ final class Database {
     }
 
     private func trimText() {
+        // Group membership does NOT protect from trim — only pinning does.
+        // Removing a clip cascades to delete its group_clips rows.
         exec("""
             DELETE FROM clips
             WHERE pinned = 0 AND kind = 0
@@ -187,8 +217,9 @@ final class Database {
     }
 
     private func trimImages() {
-        // Find image rows to drop and unlink their files.
-        let sql = """
+        // Group membership does NOT protect from trim — only pinning does.
+        // Removing a clip cascades to delete its group_clips rows.
+        let findSQL = """
             SELECT id, image_path FROM clips
             WHERE pinned = 0 AND kind = 1
               AND id NOT IN (
@@ -199,7 +230,7 @@ final class Database {
               );
         """
         var stmt: OpaquePointer?
-        sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        sqlite3_prepare_v2(db, findSQL, -1, &stmt, nil)
         var doomed: [(Int64, String?)] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             let id = sqlite3_column_int64(stmt, 0)
@@ -374,6 +405,157 @@ final class Database {
         for p in paths {
             unlinkImageIfUnreferenced(path: p, excludingID: nil)
         }
+    }
+
+    // MARK: - Groups
+
+    /// Creates a group. Returns the new id, or nil if the name is empty or
+    /// already exists (UNIQUE constraint).
+    func createGroup(name: String) -> Int64? {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, "INSERT INTO groups (name, created_at) VALUES (?, ?);", -1, &stmt, nil)
+        sqlite3_bind_text(stmt, 1, trimmed, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, now)
+        let ok = sqlite3_step(stmt) == SQLITE_DONE
+        sqlite3_finalize(stmt)
+        guard ok else { return nil }
+        return sqlite3_last_insert_rowid(db)
+    }
+
+    func listGroups() -> [ClipGroup] {
+        let sql = """
+            SELECT g.id, g.name, g.created_at,
+                   (SELECT COUNT(*) FROM group_clips gc WHERE gc.group_id = g.id) AS n
+            FROM groups g
+            ORDER BY g.created_at DESC;
+        """
+        var stmt: OpaquePointer?
+        var out: [ClipGroup] = []
+        sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let id = sqlite3_column_int64(stmt, 0)
+            let name = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+            let created = sqlite3_column_int64(stmt, 2)
+            let count = Int(sqlite3_column_int64(stmt, 3))
+            out.append(ClipGroup(
+                id: id, name: name,
+                createdAt: Date(timeIntervalSince1970: Double(created) / 1000),
+                itemCount: count
+            ))
+        }
+        sqlite3_finalize(stmt)
+        return out
+    }
+
+    func renameGroup(id: Int64, newName: String) -> Bool {
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, "UPDATE groups SET name = ? WHERE id = ?;", -1, &stmt, nil)
+        sqlite3_bind_text(stmt, 1, trimmed, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, id)
+        let ok = sqlite3_step(stmt) == SQLITE_DONE
+        sqlite3_finalize(stmt)
+        return ok
+    }
+
+    func deleteGroup(id: Int64) {
+        // ON DELETE CASCADE on group_clips removes the membership rows.
+        // Affected clips are not deleted; they may now be eligible for trim.
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, "DELETE FROM groups WHERE id = ?;", -1, &stmt, nil)
+        sqlite3_bind_int64(stmt, 1, id)
+        sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
+    }
+
+    func addClipToGroup(clipID: Int64, groupID: Int64) {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let sql = """
+            INSERT INTO group_clips (group_id, clip_id, added_at) VALUES (?, ?, ?)
+            ON CONFLICT(group_id, clip_id) DO NOTHING;
+        """
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        sqlite3_bind_int64(stmt, 1, groupID)
+        sqlite3_bind_int64(stmt, 2, clipID)
+        sqlite3_bind_int64(stmt, 3, now)
+        sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
+    }
+
+    func removeClipFromGroup(clipID: Int64, groupID: Int64) {
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, "DELETE FROM group_clips WHERE group_id = ? AND clip_id = ?;", -1, &stmt, nil)
+        sqlite3_bind_int64(stmt, 1, groupID)
+        sqlite3_bind_int64(stmt, 2, clipID)
+        sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
+    }
+
+    /// Returns clips that belong to the given group, sorted by when they were
+    /// added to the group (most recent first).
+    func clipsInGroup(_ groupID: Int64) -> [Clip] {
+        let sql = """
+            SELECT c.id, c.text, c.created_at, c.pinned,
+                   c.kind, c.image_path, c.thumbnail, c.image_width, c.image_height, c.image_bytes,
+                   c.pinned_at, c.is_password
+            FROM clips c
+            JOIN group_clips gc ON gc.clip_id = c.id
+            WHERE gc.group_id = ?
+            ORDER BY gc.added_at DESC;
+        """
+        var stmt: OpaquePointer?
+        var out: [Clip] = []
+        sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        sqlite3_bind_int64(stmt, 1, groupID)
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            out.append(readClipRow(stmt))
+        }
+        sqlite3_finalize(stmt)
+        return out
+    }
+
+    private func readClipRow(_ stmt: OpaquePointer?) -> Clip {
+        let id = sqlite3_column_int64(stmt, 0)
+        let cText = sqlite3_column_text(stmt, 1)
+        let rawText = cText != nil ? String(cString: cText!) : ""
+        let created = sqlite3_column_int64(stmt, 2)
+        let pinned = sqlite3_column_int(stmt, 3) != 0
+        let kindRaw = Int(sqlite3_column_int(stmt, 4))
+        let kind = ClipKind(rawValue: kindRaw) ?? .text
+
+        let imagePath: String? = sqlite3_column_text(stmt, 5).map { String(cString: $0) }
+        var thumb: Data?
+        if sqlite3_column_type(stmt, 6) != SQLITE_NULL,
+           let bytes = sqlite3_column_blob(stmt, 6) {
+            let n = Int(sqlite3_column_bytes(stmt, 6))
+            thumb = Data(bytes: bytes, count: n)
+        }
+        let w = Int(sqlite3_column_int(stmt, 7))
+        let h = Int(sqlite3_column_int(stmt, 8))
+        let bytes = sqlite3_column_int64(stmt, 9)
+
+        var pinnedAt: Date?
+        if sqlite3_column_type(stmt, 10) != SQLITE_NULL {
+            let ms = sqlite3_column_int64(stmt, 10)
+            pinnedAt = Date(timeIntervalSince1970: Double(ms) / 1000)
+        }
+        let isPassword = sqlite3_column_int(stmt, 11) != 0
+        let displayText = (kind == .image) ? "" : rawText
+
+        return Clip(
+            id: id, kind: kind, text: displayText,
+            imagePath: imagePath, thumbnail: thumb,
+            imageWidth: w, imageHeight: h, imageBytes: bytes,
+            createdAt: Date(timeIntervalSince1970: Double(created) / 1000),
+            pinned: pinned, pinnedAt: pinnedAt, isPassword: isPassword
+        )
     }
 
     enum MoveDirection { case up, down }

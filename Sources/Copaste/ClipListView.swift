@@ -9,25 +9,38 @@ enum SortOrder: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum AppTab: Hashable { case text, image, groups }
+
 final class ClipStore: ObservableObject {
     @Published var clips: [Clip] = []
+    @Published var groups: [ClipGroup] = []
     @Published var query: String = ""
     @Published var selectedID: Int64?
     @Published var selectedKind: ClipKind = .text
+    @Published var selectedTab: AppTab = .text
+    @Published var openedGroup: ClipGroup?
     @Published var sortOrder: SortOrder = .newest
 
     func reload() {
-        let fresh = Database.shared.all()
+        let freshClips = Database.shared.all()
+        let freshGroups = Database.shared.listGroups()
         let apply: () -> Void = { [weak self] in
             guard let self else { return }
-            self.clips = fresh
-            // Keep current selection if still visible; otherwise pick the first row in the active tab.
+            self.clips = freshClips
+            self.groups = freshGroups
+            // Refresh openedGroup snapshot so itemCount stays current.
+            if let g = self.openedGroup, let updated = freshGroups.first(where: { $0.id == g.id }) {
+                self.openedGroup = updated
+            } else if self.openedGroup != nil {
+                // Group was deleted while opened — bounce back to group list.
+                self.openedGroup = nil
+            }
             if let id = self.selectedID, self.filtered.contains(where: { $0.id == id }) {
                 // keep
             } else {
                 self.selectedID = self.filtered.first?.id
             }
-            NSLog("[Copaste] ClipStore.reload clips=\(fresh.count) selected=\(String(describing: self.selectedID))")
+            NSLog("[Copaste] ClipStore.reload clips=\(freshClips.count) groups=\(freshGroups.count)")
         }
         if Thread.isMainThread { apply() } else { DispatchQueue.main.async(execute: apply) }
     }
@@ -36,13 +49,25 @@ final class ClipStore: ObservableObject {
     var imageCount: Int { clips.lazy.filter { $0.kind == .image }.count }
 
     var filtered: [Clip] {
-        let inTab = clips.filter { $0.kind == selectedKind }
+        let pool: [Clip]
+        switch selectedTab {
+        case .text:
+            pool = clips.filter { $0.kind == .text }
+        case .image:
+            pool = clips.filter { $0.kind == .image }
+        case .groups:
+            if let g = openedGroup {
+                pool = Database.shared.clipsInGroup(g.id)
+            } else {
+                return []  // group list view doesn't show clips
+            }
+        }
         let searched: [Clip]
         if query.isEmpty {
-            searched = inTab
+            searched = pool
         } else {
             let q = query.lowercased()
-            searched = inTab.filter { clip in
+            searched = pool.filter { clip in
                 switch clip.kind {
                 case .text:
                     return clip.text.lowercased().contains(q)
@@ -75,10 +100,54 @@ final class ClipStore: ObservableObject {
         c.kind == .image ? c.imageBytes : Int64(c.text.count)
     }
 
-    func selectTab(_ kind: ClipKind) {
-        guard kind != selectedKind else { return }
-        selectedKind = kind
+    func selectTab(_ tab: AppTab) {
+        guard tab != selectedTab else {
+            // Re-tapping Groups while inside a group bounces back to the list.
+            if tab == .groups, openedGroup != nil {
+                openedGroup = nil
+                selectedID = nil
+            }
+            return
+        }
+        selectedTab = tab
+        if tab == .text { selectedKind = .text }
+        if tab == .image { selectedKind = .image }
+        // Reset opened-group when leaving Groups tab.
+        if tab != .groups { openedGroup = nil }
         selectedID = filtered.first?.id
+    }
+
+    func openGroup(_ group: ClipGroup) {
+        openedGroup = group
+        selectedID = filtered.first?.id
+    }
+
+    @discardableResult
+    func createGroup(name: String) -> ClipGroup? {
+        guard let id = Database.shared.createGroup(name: name) else { return nil }
+        reload()
+        return groups.first(where: { $0.id == id })
+    }
+
+    func renameGroup(_ group: ClipGroup, to newName: String) {
+        if Database.shared.renameGroup(id: group.id, newName: newName) {
+            reload()
+        }
+    }
+
+    func deleteGroup(_ group: ClipGroup) {
+        Database.shared.deleteGroup(id: group.id)
+        reload()
+    }
+
+    func addClip(_ clip: Clip, toGroup group: ClipGroup) {
+        Database.shared.addClipToGroup(clipID: clip.id, groupID: group.id)
+        reload()
+    }
+
+    func removeClip(_ clip: Clip, fromGroup group: ClipGroup) {
+        Database.shared.removeClipFromGroup(clipID: clip.id, groupID: group.id)
+        reload()
     }
 
     func togglePin(_ clip: Clip) {
@@ -146,9 +215,10 @@ struct ClipListView: View {
     var body: some View {
         VStack(spacing: 0) {
             TabStrip(
-                selected: store.selectedKind,
+                selected: store.selectedTab,
                 textCount: store.textCount,
                 imageCount: store.imageCount,
+                groupCount: store.groups.count,
                 onSelect: { store.selectTab($0) }
             )
 
@@ -196,25 +266,49 @@ struct ClipListView: View {
 
             Divider()
 
+            // Breadcrumb when inside a group.
+            if store.selectedTab == .groups, let group = store.openedGroup {
+                HStack(spacing: 6) {
+                    Button {
+                        store.openedGroup = nil
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Groups")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+
+                    Text("/")
+                        .foregroundStyle(.secondary.opacity(0.6))
+                    Text(group.name)
+                        .font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Text("\(group.itemCount) items")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                Divider()
+            }
+
             ScrollViewReader { proxy in
                 ScrollView {
-                    if store.selectedKind == .text {
-                        LazyVStack(spacing: 0) {
-                            ForEach(store.filtered) { clip in
-                                Row(
-                                    clip: clip,
-                                    selected: store.selectedID == clip.id,
-                                    onSelect: { store.selectedID = clip.id },
-                                    onClick: { onPick(clip) },
-                                    onPin: { store.togglePin(clip) },
-                                    onTogglePassword: { store.togglePassword(clip) },
-                                    onEdit: { onEdit(clip) },
-                                    onDelete: { store.delete(clip) }
-                                )
-                                .id(clip.id)
-                            }
-                        }
-                    } else {
+                    if store.selectedTab == .groups, store.openedGroup == nil {
+                        // Group list view
+                        GroupsListView(
+                            groups: store.groups,
+                            onOpen: { store.openGroup($0) },
+                            onCreate: { name in store.createGroup(name: name) },
+                            onRename: { g, n in store.renameGroup(g, to: n) },
+                            onDelete: { store.deleteGroup($0) }
+                        )
+                    } else if (store.selectedTab == .image) ||
+                              (store.selectedTab == .groups && store.openedGroup != nil &&
+                               store.filtered.allSatisfy { $0.kind == .image }
+                               && !store.filtered.isEmpty) {
+                        // Image grid view (Image tab, OR a group containing only images)
                         LazyVGrid(
                             columns: [GridItem(.adaptive(minimum: 150), spacing: 10)],
                             spacing: 10
@@ -226,13 +320,52 @@ struct ClipListView: View {
                                     onSelect: { store.selectedID = clip.id },
                                     onPick: { onPick(clip) },
                                     onPin: { store.togglePin(clip) },
-                                    onDelete: { store.delete(clip) }
+                                    onDelete: { store.delete(clip) },
+                                    groups: store.groups,
+                                    membershipFor: { _ in
+                                        store.openedGroup.map { [$0] } ?? []
+                                    },
+                                    onAddToGroup: { g in store.addClip(clip, toGroup: g) },
+                                    onRemoveFromGroup: { g in store.removeClip(clip, fromGroup: g) },
+                                    onCreateGroupAndAdd: { name in
+                                        if let g = store.createGroup(name: name) {
+                                            store.addClip(clip, toGroup: g)
+                                        }
+                                    }
                                 )
                                 .id(clip.id)
                             }
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
+                    } else {
+                        // Row list view (Text tab, OR group with mixed/text content)
+                        LazyVStack(spacing: 0) {
+                            ForEach(store.filtered) { clip in
+                                Row(
+                                    clip: clip,
+                                    selected: store.selectedID == clip.id,
+                                    onSelect: { store.selectedID = clip.id },
+                                    onClick: { onPick(clip) },
+                                    onPin: { store.togglePin(clip) },
+                                    onTogglePassword: { store.togglePassword(clip) },
+                                    onEdit: { onEdit(clip) },
+                                    onDelete: { store.delete(clip) },
+                                    groups: store.groups,
+                                    membershipFor: { clip in
+                                        store.openedGroup.map { [$0] } ?? []
+                                    },
+                                    onAddToGroup: { g in store.addClip(clip, toGroup: g) },
+                                    onRemoveFromGroup: { g in store.removeClip(clip, fromGroup: g) },
+                                    onCreateGroupAndAdd: { name in
+                                        if let g = store.createGroup(name: name) {
+                                            store.addClip(clip, toGroup: g)
+                                        }
+                                    }
+                                )
+                                .id(clip.id)
+                            }
+                        }
                     }
                 }
                 .onChange(of: store.selectedID) { new in
@@ -318,6 +451,14 @@ private struct Row: View {
     let onTogglePassword: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    let groups: [ClipGroup]
+    let membershipFor: (Clip) -> [ClipGroup]
+    let onAddToGroup: (ClipGroup) -> Void
+    let onRemoveFromGroup: (ClipGroup) -> Void
+    let onCreateGroupAndAdd: (String) -> Void
+
+    @State private var showCreateGroupAlert = false
+    @State private var newGroupName = ""
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -384,9 +525,40 @@ private struct Row: View {
                 Button(clip.isPassword ? "Unmark as Password" : "Mark as Password",
                        action: onTogglePassword)
             }
+
+            Menu("Add to Group") {
+                ForEach(groups) { g in
+                    Button(g.name) { onAddToGroup(g) }
+                }
+                if !groups.isEmpty { Divider() }
+                Button("New Group…") {
+                    newGroupName = ""
+                    showCreateGroupAlert = true
+                }
+            }
+
+            let memberships = membershipFor(clip)
+            if !memberships.isEmpty {
+                Menu("Remove from Group") {
+                    ForEach(memberships) { g in
+                        Button(g.name) { onRemoveFromGroup(g) }
+                    }
+                }
+            }
+
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
                 .disabled(clip.pinned)
+        }
+        .alert("New Group", isPresented: $showCreateGroupAlert) {
+            TextField("Group name", text: $newGroupName)
+            Button("Create") {
+                onCreateGroupAndAdd(newGroupName)
+            }
+            .disabled(newGroupName.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter a name for the new group. The clip will be added to it.")
         }
     }
 
@@ -458,11 +630,135 @@ private struct Row: View {
     }
 }
 
+private struct GroupsListView: View {
+    let groups: [ClipGroup]
+    let onOpen: (ClipGroup) -> Void
+    let onCreate: (String) -> Void
+    let onRename: (ClipGroup, String) -> Void
+    let onDelete: (ClipGroup) -> Void
+
+    @State private var showCreate = false
+    @State private var newName = ""
+    @State private var renaming: ClipGroup?
+    @State private var renameText = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button {
+                newName = ""
+                showCreate = true
+            } label: {
+                HStack {
+                    Image(systemName: "plus.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                    Text("New Group")
+                        .font(.system(size: 13, weight: .medium))
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Divider()
+
+            if groups.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                    Text("No groups yet")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Create a group to organize clips into collections.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.vertical, 40)
+                .frame(maxWidth: .infinity)
+            } else {
+                ForEach(groups) { g in
+                    GroupRow(
+                        group: g,
+                        onOpen: { onOpen(g) },
+                        onRename: {
+                            renameText = g.name
+                            renaming = g
+                        },
+                        onDelete: { onDelete(g) }
+                    )
+                }
+            }
+        }
+        .alert("New Group", isPresented: $showCreate) {
+            TextField("Group name", text: $newName)
+            Button("Create") {
+                onCreate(newName)
+            }
+            .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("Rename Group", isPresented: Binding(
+            get: { renaming != nil },
+            set: { if !$0 { renaming = nil } }
+        )) {
+            TextField("Group name", text: $renameText)
+            Button("Rename") {
+                if let g = renaming { onRename(g, renameText) }
+                renaming = nil
+            }
+            .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Cancel", role: .cancel) { renaming = nil }
+        }
+    }
+}
+
+private struct GroupRow: View {
+    let group: ClipGroup
+    let onOpen: () -> Void
+    let onRename: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 10) {
+                Image(systemName: "folder.fill")
+                    .foregroundStyle(Color.accentColor)
+                    .font(.system(size: 14))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(group.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.primary)
+                    Text("\(group.itemCount) item\(group.itemCount == 1 ? "" : "s")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Open", action: onOpen)
+            Button("Rename…", action: onRename)
+            Divider()
+            Button("Delete", role: .destructive, action: onDelete)
+        }
+    }
+}
+
 private struct TabStrip: View {
-    let selected: ClipKind
+    let selected: AppTab
     let textCount: Int
     let imageCount: Int
-    let onSelect: (ClipKind) -> Void
+    let groupCount: Int
+    let onSelect: (AppTab) -> Void
 
     var body: some View {
         HStack(spacing: 0) {
@@ -472,6 +768,7 @@ private struct TabStrip: View {
             HStack(spacing: 24) {
                 tabButton(.text, label: "Text", count: textCount)
                 tabButton(.image, label: "Images", count: imageCount)
+                tabButton(.groups, label: "Groups", count: groupCount)
             }
 
             Spacer()
@@ -487,9 +784,9 @@ private struct TabStrip: View {
     }
 
     @ViewBuilder
-    private func tabButton(_ kind: ClipKind, label: String, count: Int) -> some View {
-        let isActive = (selected == kind)
-        Button(action: { onSelect(kind) }) {
+    private func tabButton(_ tab: AppTab, label: String, count: Int) -> some View {
+        let isActive = (selected == tab)
+        Button(action: { onSelect(tab) }) {
             VStack(spacing: 4) {
                 HStack(spacing: 5) {
                     Text(label)
@@ -544,6 +841,14 @@ private struct ImageTile: View {
     let onPick: () -> Void
     let onPin: () -> Void
     let onDelete: () -> Void
+    let groups: [ClipGroup]
+    let membershipFor: (Clip) -> [ClipGroup]
+    let onAddToGroup: (ClipGroup) -> Void
+    let onRemoveFromGroup: (ClipGroup) -> Void
+    let onCreateGroupAndAdd: (String) -> Void
+
+    @State private var showCreateGroupAlert = false
+    @State private var newGroupName = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -617,9 +922,40 @@ private struct ImageTile: View {
         .contextMenu {
             Button("Paste", action: onPick)
             Button(clip.pinned ? "Unpin" : "Pin", action: onPin)
+
+            Menu("Add to Group") {
+                ForEach(groups) { g in
+                    Button(g.name) { onAddToGroup(g) }
+                }
+                if !groups.isEmpty { Divider() }
+                Button("New Group…") {
+                    newGroupName = ""
+                    showCreateGroupAlert = true
+                }
+            }
+
+            let memberships = membershipFor(clip)
+            if !memberships.isEmpty {
+                Menu("Remove from Group") {
+                    ForEach(memberships) { g in
+                        Button(g.name) { onRemoveFromGroup(g) }
+                    }
+                }
+            }
+
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
                 .disabled(clip.pinned)
+        }
+        .alert("New Group", isPresented: $showCreateGroupAlert) {
+            TextField("Group name", text: $newGroupName)
+            Button("Create") {
+                onCreateGroupAndAdd(newGroupName)
+            }
+            .disabled(newGroupName.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter a name for the new group. The image will be added to it.")
         }
     }
 
