@@ -87,6 +87,20 @@ final class ClipStore: ObservableObject {
         reload()
     }
 
+    func togglePassword(_ clip: Clip) {
+        NSLog("[Copaste] togglePassword id=\(clip.id) currentlyPassword=\(clip.isPassword)")
+        Database.shared.togglePassword(id: clip.id)
+        reload()
+    }
+
+    @discardableResult
+    func updateText(id: Int64, newText: String) -> Bool {
+        let ok = Database.shared.updateText(id: id, newText: newText)
+        NSLog("[Copaste] updateText id=\(id) ok=\(ok)")
+        if ok { reload() }
+        return ok
+    }
+
     func delete(_ clip: Clip) {
         guard !clip.pinned else {
             NSLog("[Copaste] delete ignored, pinned id=\(clip.id)")
@@ -127,6 +141,7 @@ struct ClipListView: View {
     let onPick: (Clip) -> Void
     let onClose: () -> Void
     let onScreenshot: () -> Void
+    let onEdit: (Clip) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -192,6 +207,8 @@ struct ClipListView: View {
                                     onSelect: { store.selectedID = clip.id },
                                     onClick: { onPick(clip) },
                                     onPin: { store.togglePin(clip) },
+                                    onTogglePassword: { store.togglePassword(clip) },
+                                    onEdit: { onEdit(clip) },
                                     onDelete: { store.delete(clip) }
                                 )
                                 .id(clip.id)
@@ -298,6 +315,8 @@ private struct Row: View {
     let onSelect: () -> Void
     let onClick: () -> Void
     let onPin: () -> Void
+    let onTogglePassword: () -> Void
+    let onEdit: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -308,9 +327,9 @@ private struct Row: View {
                 VStack(alignment: .leading, spacing: 2) {
                     switch clip.kind {
                     case .text:
-                        Text(clip.text.prefix(240).trimmingCharacters(in: .whitespacesAndNewlines))
+                        Text(displayText)
                             .lineLimit(2)
-                            .font(.system(size: 13))
+                            .font(.system(size: 13, design: clip.isPassword ? .monospaced : .default))
                     case .image:
                         ImagePreview(clip: clip)
                     }
@@ -357,7 +376,14 @@ private struct Row: View {
         .background(selected ? Color.accentColor.opacity(0.18) : Color.clear)
         .contextMenu {
             Button("Paste", action: onClick)
+            if clip.kind == .text {
+                Button("Edit…", action: onEdit)
+            }
             Button(clip.pinned ? "Unpin" : "Pin", action: onPin)
+            if clip.kind == .text {
+                Button(clip.isPassword ? "Unmark as Password" : "Mark as Password",
+                       action: onTogglePassword)
+            }
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
                 .disabled(clip.pinned)
@@ -371,6 +397,11 @@ private struct Row: View {
                 .foregroundStyle(.orange)
                 .font(.caption)
                 .padding(.top, 2)
+        } else if clip.isPassword {
+            Image(systemName: "key.fill")
+                .foregroundStyle(.purple)
+                .font(.caption)
+                .padding(.top, 2)
         } else if clip.kind == .image {
             Image(systemName: "photo")
                 .foregroundStyle(.secondary)
@@ -382,6 +413,24 @@ private struct Row: View {
                 .font(.caption)
                 .padding(.top, 2)
         }
+    }
+
+    private var displayText: String {
+        let raw = clip.text.prefix(240).trimmingCharacters(in: .whitespacesAndNewlines)
+        return clip.isPassword ? maskPassword(String(raw)) : raw
+    }
+
+    private func maskPassword(_ s: String) -> String {
+        let chars = Array(s)
+        // Short strings reveal nothing; longer ones keep first 3 / last 2 as in
+        // a typical "ab****yz" credit-card / token mask.
+        guard chars.count > 5 else {
+            return String(repeating: "•", count: chars.count)
+        }
+        let head = String(chars.prefix(3))
+        let tail = String(chars.suffix(2))
+        let mid = String(repeating: "•", count: max(4, chars.count - 5))
+        return head + mid + tail
     }
 
     private var subtitle: String {

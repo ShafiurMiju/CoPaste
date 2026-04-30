@@ -89,6 +89,10 @@ final class PopupController {
             onScreenshot: { [weak self] in
                 self?.close()
                 Screenshot.captureInteractive()
+            },
+            onEdit: { [weak self] clip in
+                self?.close()
+                ClipEditorController.shared.show(clip: clip)
             }
         )
         let host = NSHostingView(rootView: view)

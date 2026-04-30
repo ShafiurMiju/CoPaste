@@ -20,6 +20,7 @@ struct Clip: Identifiable, Equatable {
     let createdAt: Date
     let pinned: Bool
     let pinnedAt: Date?
+    let isPassword: Bool
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -68,6 +69,7 @@ final class Database {
         addColumnIfMissing("image_width", type: "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("image_height", type: "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("image_bytes", type: "INTEGER NOT NULL DEFAULT 0")
+        addColumnIfMissing("is_password", type: "INTEGER NOT NULL DEFAULT 0")
         exec("CREATE INDEX IF NOT EXISTS idx_clips_kind ON clips(kind);")
     }
 
@@ -228,7 +230,7 @@ final class Database {
         let sql = """
             SELECT id, text, created_at, pinned,
                    kind, image_path, thumbnail, image_width, image_height, image_bytes,
-                   pinned_at
+                   pinned_at, is_password
             FROM clips
             ORDER BY pinned DESC,
                      CASE WHEN pinned = 1 THEN pinned_at ELSE created_at END DESC;
@@ -261,6 +263,7 @@ final class Database {
                 let ms = sqlite3_column_int64(stmt, 10)
                 pinnedAt = Date(timeIntervalSince1970: Double(ms) / 1000)
             }
+            let isPassword = sqlite3_column_int(stmt, 11) != 0
 
             // For image rows, hide the synthetic dedup key from callers.
             let displayText = (kind == .image) ? "" : rawText
@@ -276,7 +279,8 @@ final class Database {
                 imageBytes: bytes,
                 createdAt: Date(timeIntervalSince1970: Double(created) / 1000),
                 pinned: pinned,
-                pinnedAt: pinnedAt
+                pinnedAt: pinnedAt,
+                isPassword: isPassword
             ))
         }
         sqlite3_finalize(stmt)
@@ -291,6 +295,37 @@ final class Database {
     }
 
     // MARK: - Mutations
+
+    /// Updates the text of an existing text clip. Returns false if the new
+    /// text is empty or collides with another row's text (UNIQUE constraint).
+    func updateText(id: Int64, newText: String) -> Bool {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, "SELECT id FROM clips WHERE text = ? AND id != ?;", -1, &stmt, nil)
+        sqlite3_bind_text(stmt, 1, newText, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, id)
+        let collision = sqlite3_step(stmt) == SQLITE_ROW
+        sqlite3_finalize(stmt)
+        if collision { return false }
+
+        sqlite3_prepare_v2(db, "UPDATE clips SET text = ? WHERE id = ? AND kind = 0;", -1, &stmt, nil)
+        sqlite3_bind_text(stmt, 1, newText, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, id)
+        let ok = sqlite3_step(stmt) == SQLITE_DONE
+        sqlite3_finalize(stmt)
+        return ok
+    }
+
+    func togglePassword(id: Int64) {
+        let sql = "UPDATE clips SET is_password = 1 - is_password WHERE id = ?;"
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        sqlite3_bind_int64(stmt, 1, id)
+        sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
+    }
 
     func togglePin(id: Int64) {
         let now = Int64(Date().timeIntervalSince1970 * 1000)

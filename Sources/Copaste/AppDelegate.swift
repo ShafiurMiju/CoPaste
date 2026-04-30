@@ -36,6 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refreshShortcutLabel()
         }
 
+        ClipEditorController.shared.onSave = { [weak self] id, newText in
+            self?.store.updateText(id: id, newText: newText)
+        }
+
         NSLog("[Copaste] app launched, hotkey registered")
 
         buildMenuBar()
