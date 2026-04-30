@@ -3,8 +3,10 @@ BUNDLE_ID := com.copaste.app
 BUILD_DIR := .build
 APP_BUNDLE := $(BUILD_DIR)/$(APP_NAME).app
 INSTALL_DIR := /Applications
+DMG_STAGING := $(BUILD_DIR)/dmg
+DMG_FILE := $(BUILD_DIR)/$(APP_NAME).dmg
 
-.PHONY: all build bundle install run clean icon
+.PHONY: all build bundle install run clean icon dmg
 
 all: bundle
 
@@ -36,6 +38,16 @@ install: bundle
 
 run: bundle
 	open $(APP_BUNDLE)
+
+dmg: bundle
+	@echo "→ Building $(DMG_FILE)"
+	rm -rf $(DMG_STAGING) $(DMG_FILE)
+	mkdir -p $(DMG_STAGING)
+	cp -R $(APP_BUNDLE) $(DMG_STAGING)/
+	ln -s /Applications $(DMG_STAGING)/Applications
+	hdiutil create -volname "$(APP_NAME)" -srcfolder $(DMG_STAGING) -ov -format UDZO $(DMG_FILE)
+	rm -rf $(DMG_STAGING)
+	@echo "✓ Built $(DMG_FILE)"
 
 clean:
 	rm -rf $(BUILD_DIR)

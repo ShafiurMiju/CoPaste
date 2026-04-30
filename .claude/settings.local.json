@@ -23,7 +23,8 @@
       "Bash(rm -rf \"/Applications/Copaste.app\")",
       "Read(//Applications/**)",
       "Bash(tccutil reset *)",
-      "Bash(make clean *)"
+      "Bash(make clean *)",
+      "Bash(make dmg *)"
     ]
   }
 }
