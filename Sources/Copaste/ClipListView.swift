@@ -37,6 +37,10 @@ final class ClipStore: ObservableObject {
     @Published var groups: [ClipGroup] = []
     @Published var query: String = ""
     @Published var selectedID: Int64?
+    @Published var multiSelected: Set<Int64> = []
+    /// Set by keyboard navigation only. The view watches this to scroll;
+    /// mouse clicks and deletes leave it nil so the scroll position stays put.
+    @Published var scrollTargetID: Int64?
     @Published var selectedKind: ClipKind = .text
     @Published var selectedTab: AppTab = .text
     @Published var openedGroup: ClipGroup?
@@ -159,6 +163,7 @@ final class ClipStore: ObservableObject {
             if tab == .groups, openedGroup != nil {
                 openedGroup = nil
                 selectedID = nil
+                multiSelected.removeAll()
             }
             return
         }
@@ -168,11 +173,13 @@ final class ClipStore: ObservableObject {
         // Reset opened-group when leaving Groups tab.
         if tab != .groups { openedGroup = nil }
         selectedID = filtered.first?.id
+        multiSelected.removeAll()
     }
 
     func openGroup(_ group: ClipGroup) {
         openedGroup = group
         selectedID = filtered.first?.id
+        multiSelected.removeAll()
     }
 
     @discardableResult
@@ -200,6 +207,60 @@ final class ClipStore: ObservableObject {
 
     func removeClip(_ clip: Clip, fromGroup group: ClipGroup) {
         Database.shared.removeClipFromGroup(clipID: clip.id, groupID: group.id)
+        reload()
+    }
+
+    // MARK: - Selection
+
+    func selectSingle(_ id: Int64) {
+        selectedID = id
+        multiSelected = [id]
+    }
+
+    func toggleMultiSelection(_ id: Int64) {
+        if multiSelected.contains(id) {
+            multiSelected.remove(id)
+            if selectedID == id {
+                selectedID = multiSelected.first
+            }
+        } else {
+            multiSelected.insert(id)
+            selectedID = id
+        }
+    }
+
+    func selectAllVisible() {
+        let ids = filtered.map { $0.id }
+        multiSelected = Set(ids)
+        selectedID = ids.first
+    }
+
+    func clearMultiSelection() {
+        multiSelected = selectedID.map { [$0] } ?? []
+    }
+
+    /// Bulk delete: removes every clip currently in the multi-selection set
+    /// (skipping pinned items). Falls back to the cursor row if multi is
+    /// empty. Called from Cmd+Backspace and the right-click menu.
+    func deleteSelected() {
+        let ids: Set<Int64>
+        if !multiSelected.isEmpty {
+            ids = multiSelected
+        } else if let s = selectedID {
+            ids = [s]
+        } else {
+            return
+        }
+        var removed = 0
+        for id in ids {
+            if let clip = clips.first(where: { $0.id == id }), !clip.pinned {
+                Database.shared.delete(id: id)
+                removed += 1
+            }
+        }
+        NSLog("[Copaste] bulk delete removed=\(removed) of \(ids.count)")
+        multiSelected.removeAll()
+        selectedID = nil
         reload()
     }
 
@@ -453,8 +514,8 @@ struct ClipListView: View {
                             ForEach(store.filtered) { clip in
                                 ImageTile(
                                     clip: clip,
-                                    selected: store.selectedID == clip.id,
-                                    onSelect: { store.selectedID = clip.id },
+                                    selected: store.multiSelected.contains(clip.id) || store.selectedID == clip.id,
+                                    onSelect: { selectClip(clip) },
                                     onPick: { onPick(clip) },
                                     onPin: { store.togglePin(clip) },
                                     onDelete: { store.delete(clip) },
@@ -484,8 +545,8 @@ struct ClipListView: View {
                             ForEach(store.filtered) { clip in
                                 Row(
                                     clip: clip,
-                                    selected: store.selectedID == clip.id,
-                                    onSelect: { store.selectedID = clip.id },
+                                    selected: store.multiSelected.contains(clip.id) || store.selectedID == clip.id,
+                                    onSelect: { selectClip(clip) },
                                     onClick: { onPick(clip) },
                                     onPin: { store.togglePin(clip) },
                                     onTogglePassword: { store.togglePassword(clip) },
@@ -511,22 +572,56 @@ struct ClipListView: View {
                         }
                     }
                 }
-                .onChange(of: store.selectedID) { new in
+                .onChange(of: store.scrollTargetID) { new in
                     guard let new else { return }
                     withAnimation(.easeOut(duration: 0.1)) {
                         proxy.scrollTo(new, anchor: .center)
                     }
+                    // Reset so the same target can fire again next time.
+                    DispatchQueue.main.async { store.scrollTargetID = nil }
                 }
             }
 
             Divider()
-            HStack(spacing: 12) {
-                Label("↩ paste", systemImage: "return").labelStyle(.titleOnly)
-                Label("⌘P pin", systemImage: "pin").labelStyle(.titleOnly)
-                Label("⌘⌫ delete", systemImage: "delete.left").labelStyle(.titleOnly)
-                Label("⌥↑↓ reorder", systemImage: "arrow.up.arrow.down").labelStyle(.titleOnly)
+            HStack(spacing: 10) {
+                if store.multiSelected.count > 1 {
+                    Text("\(store.multiSelected.count) selected")
+                        .foregroundStyle(Color.accentColor)
+                        .font(.caption)
+                    Button {
+                        deleteCurrent()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash.fill")
+                            Text("Delete \(deletableCount)")
+                        }
+                        .font(.caption)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(.red)
+                    .disabled(deletableCount == 0)
+                    Button("Cancel") {
+                        store.clearMultiSelection()
+                        if let id = store.filtered.first?.id {
+                            store.selectSingle(id)
+                        }
+                    }
+                    .controlSize(.small)
+                    .buttonStyle(.bordered)
+                } else {
+                    Label("↩ paste", systemImage: "return").labelStyle(.titleOnly)
+                    Label("⌘P pin", systemImage: "pin").labelStyle(.titleOnly)
+                    Label("⌘⌫ delete", systemImage: "delete.left").labelStyle(.titleOnly)
+                    Label("⌘A all", systemImage: "checkmark").labelStyle(.titleOnly)
+                    Label("⌥↑↓ reorder", systemImage: "arrow.up.arrow.down").labelStyle(.titleOnly)
+                }
                 Spacer()
-                Text("\(store.filtered.count) items").foregroundStyle(.secondary)
+                if store.multiSelected.count <= 1 {
+                    Text("\(store.filtered.count) items")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -541,13 +636,17 @@ struct ClipListView: View {
             onPin: pinCurrent,
             onDelete: deleteCurrent,
             onMoveUp: { moveCurrentItem(.up) },
-            onMoveDown: { moveCurrentItem(.down) }
+            onMoveDown: { moveCurrentItem(.down) },
+            onSelectAll: { store.selectAllVisible() }
         ))
     }
 
     private func moveCurrentItem(_ dir: Database.MoveDirection) {
         guard let idx = currentIndex() else { return }
-        store.move(store.filtered[idx], dir)
+        let clip = store.filtered[idx]
+        store.move(clip, dir)
+        // Follow the reordered clip — keep it visible as it moves.
+        store.scrollTargetID = clip.id
     }
 
     private func currentIndex() -> Int? {
@@ -562,7 +661,27 @@ struct ClipListView: View {
         let n = items.count
         let cur = currentIndex() ?? 0
         let next = ((cur + delta) % n + n) % n
-        store.selectedID = items[next].id
+        store.selectSingle(items[next].id)
+        // Keyboard nav: ensure the new selection is visible.
+        store.scrollTargetID = items[next].id
+    }
+
+    private var deletableCount: Int {
+        // Pinned clips are skipped by deleteSelected — show the user how many
+        // will actually be removed.
+        store.clips.filter { store.multiSelected.contains($0.id) && !$0.pinned }.count
+    }
+
+    /// Click handler used by Row and ImageTile. Cmd+click toggles a clip in
+    /// the multi-selection set; a plain click clears multi and selects just
+    /// the clicked clip.
+    private func selectClip(_ clip: Clip) {
+        let cmd = NSEvent.modifierFlags.contains(.command)
+        if cmd {
+            store.toggleMultiSelection(clip.id)
+        } else {
+            store.selectSingle(clip.id)
+        }
     }
 
     private func pickCurrent() {
@@ -576,12 +695,18 @@ struct ClipListView: View {
     }
 
     private func deleteCurrent() {
-        guard let idx = currentIndex() else { return }
-        let items = store.filtered
-        let nextID: Int64? = idx + 1 < items.count ? items[idx + 1].id
-            : (idx > 0 ? items[idx - 1].id : nil)
-        store.delete(items[idx])
-        store.selectedID = nextID
+        // If the user has a multi-selection, bulk-delete; otherwise the
+        // store falls back to the cursor row.
+        let nextIDAfterCursor: Int64? = {
+            guard store.multiSelected.count <= 1, let idx = currentIndex() else { return nil }
+            let items = store.filtered
+            return idx + 1 < items.count ? items[idx + 1].id
+                : (idx > 0 ? items[idx - 1].id : nil)
+        }()
+        store.deleteSelected()
+        if let next = nextIDAfterCursor {
+            store.selectSingle(next)
+        }
     }
 }
 
@@ -1511,6 +1636,7 @@ private struct KeyCatcher: NSViewRepresentable {
     let onDelete: () -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
+    let onSelectAll: () -> Void
 
     func makeNSView(context: Context) -> NSView {
         let v = KeyView()
@@ -1522,6 +1648,7 @@ private struct KeyCatcher: NSViewRepresentable {
         v.onDelete = onDelete
         v.onMoveUp = onMoveUp
         v.onMoveDown = onMoveDown
+        v.onSelectAll = onSelectAll
         return v
     }
 
@@ -1536,6 +1663,7 @@ private struct KeyCatcher: NSViewRepresentable {
         var onDelete: (() -> Void)?
         var onMoveUp: (() -> Void)?
         var onMoveDown: (() -> Void)?
+        var onSelectAll: (() -> Void)?
 
         override var acceptsFirstResponder: Bool { true }
 
@@ -1555,6 +1683,11 @@ private struct KeyCatcher: NSViewRepresentable {
                 if mods.contains(.command),
                    event.charactersIgnoringModifiers?.lowercased() == "p" {
                     self.onPin?()
+                    return nil
+                }
+                if mods.contains(.command),
+                   event.charactersIgnoringModifiers?.lowercased() == "a" {
+                    self.onSelectAll?()
                     return nil
                 }
                 if code == 51, mods.contains(.command) { // Cmd+Backspace
