@@ -574,10 +574,11 @@ struct ClipListView: View {
                 }
                 .onChange(of: store.scrollTargetID) { new in
                     guard let new else { return }
-                    withAnimation(.easeOut(duration: 0.1)) {
+                    // Long, soft spring with high damping — successive scrolls
+                    // blend into one continuous glide instead of stuttering.
+                    withAnimation(.interactiveSpring(response: 0.55, dampingFraction: 0.92, blendDuration: 0.55)) {
                         proxy.scrollTo(new, anchor: .center)
                     }
-                    // Reset so the same target can fire again next time.
                     DispatchQueue.main.async { store.scrollTargetID = nil }
                 }
             }
@@ -796,7 +797,9 @@ private struct Row: View {
                     .frame(height: 2)
             }
         }
-        .draggable(ClipDragID(id: clip.id))
+        .draggable(ClipDragID(id: clip.id)) {
+            dragPreview
+        }
         .dropDestination(for: ClipDragID.self) { items, _ in
             guard let item = items.first else { return false }
             onDropFrom(item.id)
@@ -877,6 +880,46 @@ private struct Row: View {
     private var displayText: String {
         let raw = clip.text.prefix(240).trimmingCharacters(in: .whitespacesAndNewlines)
         return clip.isPassword ? maskPassword(String(raw)) : raw
+    }
+
+    @ViewBuilder
+    private var dragPreview: some View {
+        HStack(spacing: 8) {
+            leadingIcon
+            Group {
+                switch clip.kind {
+                case .text:
+                    Text(displayText)
+                        .lineLimit(1)
+                        .font(.system(size: 12, design: clip.isPassword ? .monospaced : .default))
+                case .image:
+                    if let data = clip.thumbnail, let img = NSImage(data: data) {
+                        Image(nsImage: img)
+                            .resizable()
+                            .interpolation(.medium)
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: 80, maxHeight: 40)
+                            .cornerRadius(3)
+                    } else {
+                        Text("Image")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                }
+            }
+            .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: 280, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(NSColor.windowBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor.opacity(0.6), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 3)
     }
 
     private func maskPassword(_ s: String) -> String {
@@ -1496,7 +1539,9 @@ private struct ImageTile: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { onPick() }
         .onTapGesture(count: 1) { onSelect() }
-        .draggable(ClipDragID(id: clip.id))
+        .draggable(ClipDragID(id: clip.id)) {
+            tileDragPreview
+        }
         .dropDestination(for: ClipDragID.self) { items, _ in
             guard let item = items.first else { return false }
             onDropFrom(item.id)
@@ -1556,6 +1601,30 @@ private struct ImageTile: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    @ViewBuilder
+    private var tileDragPreview: some View {
+        ZStack {
+            Color.secondary.opacity(0.08)
+            if let data = clip.thumbnail, let img = NSImage(data: data) {
+                Image(nsImage: img)
+                    .resizable()
+                    .interpolation(.medium)
+                    .aspectRatio(contentMode: .fit)
+                    .padding(4)
+            } else {
+                Image(systemName: "photo")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 110, height: 80)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor.opacity(0.6), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.20), radius: 6, x: 0, y: 3)
     }
 
     private var dimensionsText: String {
