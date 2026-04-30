@@ -40,6 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.store.updateText(id: id, newText: newText)
         }
 
+        SettingsController.shared.onApply = { [weak self] in
+            self?.store.reload()
+        }
+
         NSLog("[Copaste] app launched, hotkey registered")
 
         buildMenuBar()
@@ -78,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
         menu.addItem(withTitle: "Take Screenshot…", action: #selector(takeScreenshot), keyEquivalent: "")
+        menu.addItem(withTitle: "Storage Limits…", action: #selector(openStorageLimits), keyEquivalent: "")
         menu.addItem(withTitle: "Clear Unpinned History", action: #selector(clearHistory), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Copaste", action: #selector(quit), keyEquivalent: "q")
@@ -97,6 +102,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func takeScreenshot() {
         popup.close()
         Screenshot.captureInteractive()
+    }
+
+    @objc private func openStorageLimits() {
+        SettingsController.shared.show()
     }
 
     @objc private func clearHistory() {

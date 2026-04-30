@@ -37,8 +37,22 @@ final class Database {
     private var db: OpaquePointer?
     private let imagesDir: URL
 
-    static let textHistoryLimit = 100
-    static let imageHistoryLimit = 30
+    static let defaultTextHistoryLimit = 100
+    static let defaultImageHistoryLimit = 30
+
+    static let textHistoryLimitKey = "Copaste.textHistoryLimit"
+    static let imageHistoryLimitKey = "Copaste.imageHistoryLimit"
+
+    static var textHistoryLimit: Int {
+        let v = UserDefaults.standard.integer(forKey: textHistoryLimitKey)
+        return v > 0 ? v : defaultTextHistoryLimit
+    }
+
+    static var imageHistoryLimit: Int {
+        let v = UserDefaults.standard.integer(forKey: imageHistoryLimitKey)
+        return v > 0 ? v : defaultImageHistoryLimit
+    }
+
     static let maxImageBytes: Int64 = 20 * 1024 * 1024  // 20 MB
     static let thumbnailMaxDim: CGFloat = 200
 
@@ -316,6 +330,68 @@ final class Database {
         }
         sqlite3_finalize(stmt)
         return out
+    }
+
+    // MARK: - Stats / estimates
+
+    /// Average bytes per text clip (raw text length). Falls back to a
+    /// reasonable default when there are no text clips yet.
+    func averageTextBytes() -> Int {
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, "SELECT AVG(LENGTH(text)) FROM clips WHERE kind = 0;", -1, &stmt, nil)
+        var avg = 0
+        if sqlite3_step(stmt) == SQLITE_ROW, sqlite3_column_type(stmt, 0) != SQLITE_NULL {
+            avg = Int(sqlite3_column_double(stmt, 0))
+        }
+        sqlite3_finalize(stmt)
+        return avg > 0 ? avg : 250
+    }
+
+    /// Average PNG file size of stored images. Defaults to ~800 KB if none.
+    func averageImageBytes() -> Int64 {
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, "SELECT AVG(image_bytes) FROM clips WHERE kind = 1;", -1, &stmt, nil)
+        var avg: Int64 = 0
+        if sqlite3_step(stmt) == SQLITE_ROW, sqlite3_column_type(stmt, 0) != SQLITE_NULL {
+            avg = Int64(sqlite3_column_double(stmt, 0))
+        }
+        sqlite3_finalize(stmt)
+        return avg > 0 ? avg : 800_000
+    }
+
+    func textCount() -> Int {
+        countWhere("kind = 0")
+    }
+
+    func imageCount() -> Int {
+        countWhere("kind = 1")
+    }
+
+    /// Number of unpinned clips of a given kind. These are the only clips
+    /// affected by trim — pinned clips are always kept regardless of limit.
+    func unpinnedTextCount() -> Int {
+        countWhere("kind = 0 AND pinned = 0")
+    }
+
+    func unpinnedImageCount() -> Int {
+        countWhere("kind = 1 AND pinned = 0")
+    }
+
+    private func countWhere(_ predicate: String) -> Int {
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM clips WHERE \(predicate);", -1, &stmt, nil)
+        var n = 0
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            n = Int(sqlite3_column_int64(stmt, 0))
+        }
+        sqlite3_finalize(stmt)
+        return n
+    }
+
+    /// Re-applies trim rules — call after the user lowers a limit.
+    func enforceLimits() {
+        trimText()
+        trimImages()
     }
 
     /// Reads the full image bytes from disk for the given clip.
