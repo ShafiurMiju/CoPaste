@@ -112,7 +112,10 @@ final class PopupController {
         )
         p.titleVisibility = .hidden
         p.titlebarAppearsTransparent = true
-        p.isMovableByWindowBackground = true
+        // Disabled so SwiftUI .draggable on rows/tiles isn't hijacked by
+        // window-drag. The popup recenters on every show(), so the user
+        // doesn't need to drag the window itself.
+        p.isMovableByWindowBackground = false
         p.isReleasedWhenClosed = false
         p.contentView = host
         p.standardWindowButton(.miniaturizeButton)?.isHidden = true

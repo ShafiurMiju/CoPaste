@@ -1,5 +1,14 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
+
+struct ClipDragID: Codable, Transferable {
+    let id: Int64
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .data)
+    }
+}
 
 enum SortOrder: String, CaseIterable, Identifiable {
     case newest = "Newest first"
@@ -224,6 +233,61 @@ final class ClipStore: ObservableObject {
         reload()
     }
 
+    /// Drag-to-reorder: removes the source from its current position and
+    /// inserts it where the target sits. The clips between them shift over
+    /// (true reorder, not a swap).
+    ///
+    /// Implementation: redistribute the existing timestamps of the visible
+    /// same-pinned section onto the clips in their new order. Since the
+    /// timestamps came from that exact section, sort order is preserved
+    /// for any clips not part of this filter — only the visible ones get
+    /// their relative order changed.
+    func swapByDrag(sourceID: Int64, targetID: Int64) {
+        guard sourceID != targetID else { return }
+        let items = filtered
+        guard let from = items.firstIndex(where: { $0.id == sourceID }),
+              let to = items.firstIndex(where: { $0.id == targetID }),
+              from != to else { return }
+        let source = items[from]
+        let target = items[to]
+        guard source.pinned == target.pinned else {
+            NSLog("[Copaste] reorder skipped — pinned mismatch")
+            return
+        }
+        guard sortOrder == .newest || sortOrder == .oldest else {
+            NSLog("[Copaste] reorder skipped — sort=\(sortOrder.rawValue)")
+            return
+        }
+
+        let pinnedFlag = source.pinned
+        let originalSection = items.filter { $0.pinned == pinnedFlag }
+
+        // Build the new order within the section.
+        var newSection = originalSection
+        guard let srcIdx = newSection.firstIndex(where: { $0.id == source.id }),
+              let tgtIdx = originalSection.firstIndex(where: { $0.id == target.id })
+        else { return }
+        let moved = newSection.remove(at: srcIdx)
+        // After remove, indices >= srcIdx shifted by -1. Recompute insertion
+        // index from the original positions to land "where target was".
+        let insertIdx = (tgtIdx > srcIdx) ? tgtIdx : tgtIdx
+        newSection.insert(moved, at: min(insertIdx, newSection.count))
+
+        // Existing timestamps from the section, in their current display order.
+        let times: [Int64] = originalSection.map { c in
+            let date = pinnedFlag ? (c.pinnedAt ?? c.createdAt) : c.createdAt
+            return Int64(date.timeIntervalSince1970 * 1000)
+        }
+
+        // Reassign the same set of timestamps to the new order.
+        for (i, clip) in newSection.enumerated() where i < times.count {
+            Database.shared.setOrdering(id: clip.id, value: times[i], pinned: pinnedFlag)
+        }
+
+        NSLog("[Copaste] reorder source=\(sourceID) -> position of target=\(targetID)")
+        reload()
+    }
+
     func move(_ clip: Clip, _ dir: Database.MoveDirection) {
         // Reorder operates on the *visible* filtered list, so the user always
         // swaps with the neighbor they actually see (regardless of tab,
@@ -404,6 +468,9 @@ struct ClipListView: View {
                                         if let g = store.createGroup(name: name) {
                                             store.addClip(clip, toGroup: g)
                                         }
+                                    },
+                                    onDropFrom: { sourceID in
+                                        store.swapByDrag(sourceID: sourceID, targetID: clip.id)
                                     }
                                 )
                                 .id(clip.id)
@@ -434,6 +501,9 @@ struct ClipListView: View {
                                         if let g = store.createGroup(name: name) {
                                             store.addClip(clip, toGroup: g)
                                         }
+                                    },
+                                    onDropFrom: { sourceID in
+                                        store.swapByDrag(sourceID: sourceID, targetID: clip.id)
                                     }
                                 )
                                 .id(clip.id)
@@ -529,9 +599,11 @@ private struct Row: View {
     let onAddToGroup: (ClipGroup) -> Void
     let onRemoveFromGroup: (ClipGroup) -> Void
     let onCreateGroupAndAdd: (String) -> Void
+    let onDropFrom: (Int64) -> Void
 
     @State private var showCreateGroupAlert = false
     @State private var newGroupName = ""
+    @State private var isDropTarget = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -587,7 +659,24 @@ private struct Row: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(selected ? Color.accentColor.opacity(0.18) : Color.clear)
+        .background(
+            isDropTarget
+                ? Color.accentColor.opacity(0.28)
+                : (selected ? Color.accentColor.opacity(0.18) : Color.clear)
+        )
+        .overlay(alignment: .top) {
+            if isDropTarget {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(height: 2)
+            }
+        }
+        .draggable(ClipDragID(id: clip.id))
+        .dropDestination(for: ClipDragID.self) { items, _ in
+            guard let item = items.first else { return false }
+            onDropFrom(item.id)
+            return true
+        } isTargeted: { isDropTarget = $0 }
         .contextMenu {
             Button("Paste", action: onClick)
             if clip.kind == .text {
@@ -1206,9 +1295,11 @@ private struct ImageTile: View {
     let onAddToGroup: (ClipGroup) -> Void
     let onRemoveFromGroup: (ClipGroup) -> Void
     let onCreateGroupAndAdd: (String) -> Void
+    let onDropFrom: (Int64) -> Void
 
     @State private var showCreateGroupAlert = false
     @State private var newGroupName = ""
+    @State private var isDropTarget = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1272,13 +1363,20 @@ private struct ImageTile: View {
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .stroke(
-                    selected ? Color.accentColor : Color.secondary.opacity(0.22),
-                    lineWidth: selected ? 2 : 0.5
+                    isDropTarget ? Color.accentColor
+                        : (selected ? Color.accentColor : Color.secondary.opacity(0.22)),
+                    lineWidth: isDropTarget ? 2.5 : (selected ? 2 : 0.5)
                 )
         )
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { onPick() }
         .onTapGesture(count: 1) { onSelect() }
+        .draggable(ClipDragID(id: clip.id))
+        .dropDestination(for: ClipDragID.self) { items, _ in
+            guard let item = items.first else { return false }
+            onDropFrom(item.id)
+            return true
+        } isTargeted: { isDropTarget = $0 }
         .contextMenu {
             Button("Paste", action: onPick)
             Button(clip.pinned ? "Unpin" : "Pin", action: onPin)

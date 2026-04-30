@@ -574,6 +574,14 @@ final class Database {
         setInt64(column, id: b, value: v1)
     }
 
+    /// Drag-to-reorder: writes a new timestamp value for one clip. Used by
+    /// the store after computing a redistribution of timestamps across the
+    /// reordered list (so other clips effectively "shift" rather than swap).
+    func setOrdering(id: Int64, value: Int64, pinned: Bool) {
+        let column = pinned ? "pinned_at" : "created_at"
+        setInt64(column, id: id, value: value)
+    }
+
     @discardableResult
     func move(id: Int64, direction: MoveDirection) -> Bool {
         let all = self.all()
