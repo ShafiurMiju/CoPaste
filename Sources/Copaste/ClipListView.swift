@@ -55,12 +55,20 @@ final class ClipStore: ObservableObject {
             // Pinned items always float to the top, regardless of sort.
             if a.pinned != b.pinned { return a.pinned }
             switch sortOrder {
-            case .newest:   return a.createdAt > b.createdAt
-            case .oldest:   return a.createdAt < b.createdAt
+            case .newest:   return orderingDate(a) > orderingDate(b)
+            case .oldest:   return orderingDate(a) < orderingDate(b)
             case .largest:  return sortSize(a) > sortSize(b)
             case .smallest: return sortSize(a) < sortSize(b)
             }
         }
+    }
+
+    /// Pinned items reorder via `pinned_at` (when they were pinned), unpinned
+    /// via `created_at`. This matches what `Database.swapOrdering` writes, so
+    /// reorder produces a visible result.
+    private func orderingDate(_ c: Clip) -> Date {
+        if c.pinned, let p = c.pinnedAt { return p }
+        return c.createdAt
     }
 
     private func sortSize(_ c: Clip) -> Int64 {
@@ -90,10 +98,27 @@ final class ClipStore: ObservableObject {
     }
 
     func move(_ clip: Clip, _ dir: Database.MoveDirection) {
-        NSLog("[Copaste] move id=\(clip.id) dir=\(dir)")
-        if Database.shared.move(id: clip.id, direction: dir) {
-            reload()
+        // Reorder operates on the *visible* filtered list, so the user always
+        // swaps with the neighbor they actually see (regardless of tab,
+        // search, or sort).
+        let items = filtered
+        guard let idx = items.firstIndex(where: { $0.id == clip.id }) else { return }
+        let neighborIdx = dir == .up ? idx - 1 : idx + 1
+        guard neighborIdx >= 0, neighborIdx < items.count else { return }
+        let neighbor = items[neighborIdx]
+        guard clip.pinned == neighbor.pinned else { return }
+
+        // Reordering is only meaningful for time-based sorts (we swap
+        // created_at / pinned_at). Bail out otherwise so we don't silently
+        // corrupt timestamps with no visible effect.
+        guard sortOrder == .newest || sortOrder == .oldest else {
+            NSLog("[Copaste] reorder skipped — sort=\(sortOrder.rawValue)")
+            return
         }
+
+        NSLog("[Copaste] move id=\(clip.id) dir=\(dir) neighbor=\(neighbor.id)")
+        Database.shared.swapOrdering(a: clip.id, b: neighbor.id, pinned: clip.pinned)
+        reload()
     }
 }
 
@@ -164,6 +189,7 @@ struct ClipListView: View {
                                 Row(
                                     clip: clip,
                                     selected: store.selectedID == clip.id,
+                                    onSelect: { store.selectedID = clip.id },
                                     onClick: { onPick(clip) },
                                     onPin: { store.togglePin(clip) },
                                     onDelete: { store.delete(clip) }
@@ -269,6 +295,7 @@ struct ClipListView: View {
 private struct Row: View {
     let clip: Clip
     let selected: Bool
+    let onSelect: () -> Void
     let onClick: () -> Void
     let onPin: () -> Void
     let onDelete: () -> Void
@@ -296,6 +323,7 @@ private struct Row: View {
             }
             .contentShape(Rectangle())
             .onTapGesture(count: 2) { onClick() }
+            .onTapGesture(count: 1) { onSelect() }
 
             HStack(spacing: 4) {
                 Button {
@@ -327,6 +355,13 @@ private struct Row: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(selected ? Color.accentColor.opacity(0.18) : Color.clear)
+        .contextMenu {
+            Button("Paste", action: onClick)
+            Button(clip.pinned ? "Unpin" : "Pin", action: onPin)
+            Divider()
+            Button("Delete", role: .destructive, action: onDelete)
+                .disabled(clip.pinned)
+        }
     }
 
     @ViewBuilder

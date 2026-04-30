@@ -19,6 +19,7 @@ struct Clip: Identifiable, Equatable {
     let imageBytes: Int64
     let createdAt: Date
     let pinned: Bool
+    let pinnedAt: Date?
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -226,7 +227,8 @@ final class Database {
     func all() -> [Clip] {
         let sql = """
             SELECT id, text, created_at, pinned,
-                   kind, image_path, thumbnail, image_width, image_height, image_bytes
+                   kind, image_path, thumbnail, image_width, image_height, image_bytes,
+                   pinned_at
             FROM clips
             ORDER BY pinned DESC,
                      CASE WHEN pinned = 1 THEN pinned_at ELSE created_at END DESC;
@@ -254,6 +256,12 @@ final class Database {
             let h = Int(sqlite3_column_int(stmt, 8))
             let bytes = sqlite3_column_int64(stmt, 9)
 
+            var pinnedAt: Date?
+            if sqlite3_column_type(stmt, 10) != SQLITE_NULL {
+                let ms = sqlite3_column_int64(stmt, 10)
+                pinnedAt = Date(timeIntervalSince1970: Double(ms) / 1000)
+            }
+
             // For image rows, hide the synthetic dedup key from callers.
             let displayText = (kind == .image) ? "" : rawText
 
@@ -267,7 +275,8 @@ final class Database {
                 imageHeight: h,
                 imageBytes: bytes,
                 createdAt: Date(timeIntervalSince1970: Double(created) / 1000),
-                pinned: pinned
+                pinned: pinned,
+                pinnedAt: pinnedAt
             ))
         }
         sqlite3_finalize(stmt)
@@ -333,6 +342,20 @@ final class Database {
     }
 
     enum MoveDirection { case up, down }
+
+    /// Swaps the ordering timestamps of two clips so the user can reorder
+    /// them in the visible list. The caller decides which two IDs to swap
+    /// (typically the selected clip and its visible neighbor) and which
+    /// column to swap (pinned_at for pinned clips, created_at otherwise).
+    func swapOrdering(a: Int64, b: Int64, pinned: Bool) {
+        let column = pinned ? "pinned_at" : "created_at"
+        guard
+            let v1 = fetchInt64(column, id: a),
+            let v2 = fetchInt64(column, id: b)
+        else { return }
+        setInt64(column, id: a, value: v2)
+        setInt64(column, id: b, value: v1)
+    }
 
     @discardableResult
     func move(id: Int64, direction: MoveDirection) -> Bool {
