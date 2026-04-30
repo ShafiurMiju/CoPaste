@@ -737,16 +737,16 @@ private struct DateFilterPopover: View {
                     )
                 }
             }
-            .padding(.bottom, 4)
+            .padding(.bottom, 2)
 
-            Divider().padding(.horizontal, 14).padding(.vertical, 6)
+            Divider().padding(.horizontal, 12).padding(.vertical, 3)
 
             sectionLabel("Pick a specific date")
 
             MiniCalendar(selection: $pickerDate)
-                .padding(.horizontal, 14)
-                .padding(.top, 4)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 10)
+                .padding(.top, 2)
+                .padding(.bottom, 2)
 
             HStack {
                 if selected == .specific {
@@ -772,11 +772,11 @@ private struct DateFilterPopover: View {
                 .controlSize(.small)
                 .keyboardShortcut(.defaultAction)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 6)
-            .padding(.bottom, 12)
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
         }
-        .frame(width: 300)
+        .frame(width: 200)
     }
 
     private var header: some View {
@@ -788,29 +788,29 @@ private struct DateFilterPopover: View {
                 Button {
                     onPickPreset(.all)
                 } label: {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 2) {
                         Image(systemName: "xmark.circle.fill")
                         Text("Clear")
                     }
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .padding(.trailing, 14)
+                .padding(.trailing, 12)
             }
         }
-        .padding(.top, 12)
-        .padding(.bottom, 6)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
     }
 
     private func sectionLabel(_ s: String) -> some View {
         Text(s)
-            .font(.system(size: 10, weight: .semibold))
+            .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(.secondary)
             .textCase(.uppercase)
             .tracking(0.4)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 2)
     }
 
     private func formattedDate(_ d: Date) -> String {
@@ -832,7 +832,7 @@ private struct MiniCalendar: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 2) {
             header
             weekdayRow
             daysGrid
@@ -850,19 +850,19 @@ private struct MiniCalendar: View {
             navButton(systemName: "chevron.left") { shift(-1) }
             Spacer()
             Text(monthLabel)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
             Spacer()
             navButton(systemName: "chevron.right") { shift(1) }
         }
-        .frame(height: 26)
+        .frame(height: 18)
     }
 
     private func navButton(systemName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
+                .frame(width: 16, height: 16)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -872,7 +872,7 @@ private struct MiniCalendar: View {
         HStack(spacing: 0) {
             ForEach(orderedWeekdaySymbols, id: \.self) { sym in
                 Text(sym)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
             }
@@ -889,7 +889,7 @@ private struct MiniCalendar: View {
 
     private var daysGrid: some View {
         let columns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 7)
-        return LazyVGrid(columns: columns, spacing: 4) {
+        return LazyVGrid(columns: columns, spacing: 1) {
             ForEach(daysToDisplay(), id: \.self) { date in
                 cell(for: date)
             }
@@ -918,10 +918,10 @@ private struct MiniCalendar: View {
                         .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1.2)
                 }
                 Text("\(day)")
-                    .font(.system(size: 12, weight: isSelected || isToday ? .semibold : .regular))
+                    .font(.system(size: 9.5, weight: isSelected || isToday ? .semibold : .regular))
                     .foregroundStyle(fg)
             }
-            .frame(width: 28, height: 28)
+            .frame(width: 18, height: 18)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -959,27 +959,27 @@ private struct DateFilterRow: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 ZStack {
                     Circle()
                         .strokeBorder(
                             isActive ? Color.accentColor : Color.secondary.opacity(0.45),
-                            lineWidth: 1.5
+                            lineWidth: 1.2
                         )
-                        .frame(width: 14, height: 14)
+                        .frame(width: 11, height: 11)
                     if isActive {
                         Circle()
                             .fill(Color.accentColor)
-                            .frame(width: 7, height: 7)
+                            .frame(width: 5.5, height: 5.5)
                     }
                 }
                 Text(label)
-                    .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+                    .font(.system(size: 11, weight: isActive ? .semibold : .regular))
                     .foregroundStyle(.primary)
                 Spacer()
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 3)
             .contentShape(Rectangle())
             .background(
                 hovering ? Color.secondary.opacity(0.10) : Color.clear
