@@ -14,8 +14,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         popup = PopupController(store: store)
 
-        watcher.onNewClip = { [weak self] text in
-            Database.shared.insert(text)
+        watcher.onNewClip = { [weak self] payload in
+            switch payload {
+            case .text(let s):
+                Database.shared.insert(s)
+            case .image(let data):
+                Database.shared.insertImage(data)
+            }
             self?.store.reload()
         }
         watcher.start()
@@ -68,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(aotItem)
 
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Take Screenshot…", action: #selector(takeScreenshot), keyEquivalent: "")
         menu.addItem(withTitle: "Clear Unpinned History", action: #selector(clearHistory), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Copaste", action: #selector(quit), keyEquivalent: "q")
@@ -82,6 +88,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openShortcutRecorder() {
         ShortcutRecorderController.shared.show()
+    }
+
+    @objc private func takeScreenshot() {
+        popup.close()
+        Screenshot.captureInteractive()
     }
 
     @objc private func clearHistory() {

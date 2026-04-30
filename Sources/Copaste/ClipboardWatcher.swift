@@ -1,10 +1,15 @@
 import Cocoa
 
+enum ClipPayload {
+    case text(String)
+    case image(Data)
+}
+
 final class ClipboardWatcher {
     private var lastChangeCount: Int
     private var timer: Timer?
 
-    var onNewClip: ((String) -> Void)?
+    var onNewClip: ((ClipPayload) -> Void)?
 
     init() {
         self.lastChangeCount = NSPasteboard.general.changeCount
@@ -34,7 +39,23 @@ final class ClipboardWatcher {
             }
         }
 
-        guard let str = pb.string(forType: .string), !str.isEmpty else { return }
-        onNewClip?(str)
+        // Prefer text when both are present (e.g. apps that put a label
+        // alongside a screenshot), so plain copy-paste of text never gets
+        // hijacked by image data.
+        if let str = pb.string(forType: .string), !str.isEmpty {
+            onNewClip?(.text(str))
+            return
+        }
+
+        if let data = imageData(from: pb) {
+            onNewClip?(.image(data))
+        }
+    }
+
+    private func imageData(from pb: NSPasteboard) -> Data? {
+        // Try PNG first (smaller), fall back to TIFF — Database normalizes both to PNG.
+        if let png = pb.data(forType: .png) { return png }
+        if let tiff = pb.data(forType: .tiff) { return tiff }
+        return nil
     }
 }

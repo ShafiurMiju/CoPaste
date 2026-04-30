@@ -24,7 +24,9 @@
       "Read(//Applications/**)",
       "Bash(tccutil reset *)",
       "Bash(make clean *)",
-      "Bash(make dmg *)"
+      "Bash(make dmg *)",
+      "Bash(make run *)",
+      "Bash(codesign -dv /Applications/Copaste.app)"
     ]
   }
 }

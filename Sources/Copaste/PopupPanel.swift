@@ -85,7 +85,11 @@ final class PopupController {
         let view = ClipListView(
             store: store,
             onPick: { [weak self] clip in self?.pick(clip) },
-            onClose: { [weak self] in self?.close() }
+            onClose: { [weak self] in self?.close() },
+            onScreenshot: { [weak self] in
+                self?.close()
+                Screenshot.captureInteractive()
+            }
         )
         let host = NSHostingView(rootView: view)
         let p = KeyablePanel(
@@ -109,6 +113,15 @@ final class PopupController {
 
     private func pick(_ clip: Clip) {
         close()
-        Paster.copyAndPaste(clip.text, into: previousApp)
+        switch clip.kind {
+        case .text:
+            Paster.copyAndPaste(clip.text, into: previousApp)
+        case .image:
+            if let data = Database.shared.imageData(for: clip) {
+                Paster.copyAndPasteImage(data, into: previousApp)
+            } else {
+                NSLog("[Copaste] missing image data for clip id=\(clip.id)")
+            }
+        }
     }
 }

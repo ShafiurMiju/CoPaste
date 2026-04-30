@@ -1,18 +1,28 @@
 import SwiftUI
 import AppKit
 
+enum SortOrder: String, CaseIterable, Identifiable {
+    case newest = "Newest first"
+    case oldest = "Oldest first"
+    case largest = "Largest first"
+    case smallest = "Smallest first"
+    var id: String { rawValue }
+}
+
 final class ClipStore: ObservableObject {
     @Published var clips: [Clip] = []
     @Published var query: String = ""
     @Published var selectedID: Int64?
+    @Published var selectedKind: ClipKind = .text
+    @Published var sortOrder: SortOrder = .newest
 
     func reload() {
         let fresh = Database.shared.all()
         let apply: () -> Void = { [weak self] in
             guard let self else { return }
             self.clips = fresh
-            // Keep current selection if still present; otherwise pick the first visible row.
-            if let id = self.selectedID, fresh.contains(where: { $0.id == id }) {
+            // Keep current selection if still visible; otherwise pick the first row in the active tab.
+            if let id = self.selectedID, self.filtered.contains(where: { $0.id == id }) {
                 // keep
             } else {
                 self.selectedID = self.filtered.first?.id
@@ -22,10 +32,45 @@ final class ClipStore: ObservableObject {
         if Thread.isMainThread { apply() } else { DispatchQueue.main.async(execute: apply) }
     }
 
+    var textCount: Int { clips.lazy.filter { $0.kind == .text }.count }
+    var imageCount: Int { clips.lazy.filter { $0.kind == .image }.count }
+
     var filtered: [Clip] {
-        guard !query.isEmpty else { return clips }
-        let q = query.lowercased()
-        return clips.filter { $0.text.lowercased().contains(q) }
+        let inTab = clips.filter { $0.kind == selectedKind }
+        let searched: [Clip]
+        if query.isEmpty {
+            searched = inTab
+        } else {
+            let q = query.lowercased()
+            searched = inTab.filter { clip in
+                switch clip.kind {
+                case .text:
+                    return clip.text.lowercased().contains(q)
+                case .image:
+                    return "image".contains(q)
+                }
+            }
+        }
+        return searched.sorted { a, b in
+            // Pinned items always float to the top, regardless of sort.
+            if a.pinned != b.pinned { return a.pinned }
+            switch sortOrder {
+            case .newest:   return a.createdAt > b.createdAt
+            case .oldest:   return a.createdAt < b.createdAt
+            case .largest:  return sortSize(a) > sortSize(b)
+            case .smallest: return sortSize(a) < sortSize(b)
+            }
+        }
+    }
+
+    private func sortSize(_ c: Clip) -> Int64 {
+        c.kind == .image ? c.imageBytes : Int64(c.text.count)
+    }
+
+    func selectTab(_ kind: ClipKind) {
+        guard kind != selectedKind else { return }
+        selectedKind = kind
+        selectedID = filtered.first?.id
     }
 
     func togglePin(_ clip: Clip) {
@@ -56,30 +101,95 @@ struct ClipListView: View {
     @ObservedObject var store: ClipStore
     let onPick: (Clip) -> Void
     let onClose: () -> Void
+    let onScreenshot: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            SearchField(text: $store.query, onSubmit: pickCurrent, onCancel: onClose,
-                        onArrowDown: { move(1) }, onArrowUp: { move(-1) })
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-                .padding(.bottom, 8)
+            TabStrip(
+                selected: store.selectedKind,
+                textCount: store.textCount,
+                imageCount: store.imageCount,
+                onSelect: { store.selectTab($0) }
+            )
+
+            HStack(spacing: 8) {
+                SearchField(text: $store.query, onSubmit: pickCurrent, onCancel: onClose,
+                            onArrowDown: { move(1) }, onArrowUp: { move(-1) })
+
+                Button(action: onScreenshot) {
+                    Image(systemName: "camera.viewfinder")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("Take Screenshot")
+
+                Menu {
+                    ForEach(SortOrder.allCases) { order in
+                        Button {
+                            store.sortOrder = order
+                        } label: {
+                            if store.sortOrder == order {
+                                Label(order.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(order.rawValue)
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Sort: \(store.sortOrder.rawValue)")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 8)
 
             Divider()
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(store.filtered) { clip in
-                            Row(
-                                clip: clip,
-                                selected: store.selectedID == clip.id,
-                                onClick: { onPick(clip) },
-                                onPin: { store.togglePin(clip) },
-                                onDelete: { store.delete(clip) }
-                            )
-                            .id(clip.id)
+                    if store.selectedKind == .text {
+                        LazyVStack(spacing: 0) {
+                            ForEach(store.filtered) { clip in
+                                Row(
+                                    clip: clip,
+                                    selected: store.selectedID == clip.id,
+                                    onClick: { onPick(clip) },
+                                    onPin: { store.togglePin(clip) },
+                                    onDelete: { store.delete(clip) }
+                                )
+                                .id(clip.id)
+                            }
                         }
+                    } else {
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 150), spacing: 10)],
+                            spacing: 10
+                        ) {
+                            ForEach(store.filtered) { clip in
+                                ImageTile(
+                                    clip: clip,
+                                    selected: store.selectedID == clip.id,
+                                    onSelect: { store.selectedID = clip.id },
+                                    onPick: { onPick(clip) },
+                                    onPin: { store.togglePin(clip) },
+                                    onDelete: { store.delete(clip) }
+                                )
+                                .id(clip.id)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
                     }
                 }
                 .onChange(of: store.selectedID) { new in
@@ -166,23 +276,18 @@ private struct Row: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
-                if clip.pinned {
-                    Image(systemName: "pin.fill")
-                        .foregroundStyle(.orange)
-                        .font(.caption)
-                        .padding(.top, 2)
-                } else {
-                    Image(systemName: "doc.on.doc")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                        .padding(.top, 2)
-                }
+                leadingIcon
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(clip.text.prefix(240).trimmingCharacters(in: .whitespacesAndNewlines))
-                        .lineLimit(2)
-                        .font(.system(size: 13))
-                    Text(relativeDate(clip.createdAt))
+                    switch clip.kind {
+                    case .text:
+                        Text(clip.text.prefix(240).trimmingCharacters(in: .whitespacesAndNewlines))
+                            .lineLimit(2)
+                            .font(.system(size: 13))
+                    case .image:
+                        ImagePreview(clip: clip)
+                    }
+                    Text(subtitle)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -222,6 +327,239 @@ private struct Row: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(selected ? Color.accentColor.opacity(0.18) : Color.clear)
+    }
+
+    @ViewBuilder
+    private var leadingIcon: some View {
+        if clip.pinned {
+            Image(systemName: "pin.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+                .padding(.top, 2)
+        } else if clip.kind == .image {
+            Image(systemName: "photo")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+                .padding(.top, 2)
+        } else {
+            Image(systemName: "doc.on.doc")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+                .padding(.top, 2)
+        }
+    }
+
+    private var subtitle: String {
+        let when = relativeDate(clip.createdAt)
+        switch clip.kind {
+        case .text:
+            return when
+        case .image:
+            return "\(imageMeta) • \(when)"
+        }
+    }
+
+    private var imageMeta: String {
+        let dims = (clip.imageWidth > 0 && clip.imageHeight > 0)
+            ? "\(clip.imageWidth)×\(clip.imageHeight)"
+            : "Image"
+        let size = ByteCountFormatter.string(fromByteCount: clip.imageBytes, countStyle: .file)
+        return "\(dims) • \(size)"
+    }
+
+    private func relativeDate(_ d: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f.localizedString(for: d, relativeTo: Date())
+    }
+}
+
+private struct TabStrip: View {
+    let selected: ClipKind
+    let textCount: Int
+    let imageCount: Int
+    let onSelect: (ClipKind) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Left padding clears the traffic-light buttons.
+            Color.clear.frame(width: 70, height: 1)
+
+            HStack(spacing: 24) {
+                tabButton(.text, label: "Text", count: textCount)
+                tabButton(.image, label: "Images", count: imageCount)
+            }
+
+            Spacer()
+        }
+        .padding(.top, 6)
+        .padding(.bottom, 0)
+        .background(Color(NSColor.windowBackgroundColor))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.secondary.opacity(0.18))
+                .frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private func tabButton(_ kind: ClipKind, label: String, count: Int) -> some View {
+        let isActive = (selected == kind)
+        Button(action: { onSelect(kind) }) {
+            VStack(spacing: 4) {
+                HStack(spacing: 5) {
+                    Text(label)
+                        .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+                        .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                    Text("\(count)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule().fill(Color.secondary.opacity(0.15))
+                        )
+                }
+                .padding(.bottom, 6)
+                Rectangle()
+                    .fill(isActive ? Color.accentColor : Color.clear)
+                    .frame(height: 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ImagePreview: View {
+    let clip: Clip
+
+    var body: some View {
+        Group {
+            if let data = clip.thumbnail, let img = NSImage(data: data) {
+                Image(nsImage: img)
+                    .resizable()
+                    .interpolation(.medium)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 220, maxHeight: 80, alignment: .leading)
+                    .cornerRadius(4)
+            } else {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.secondary.opacity(0.15))
+                    .frame(width: 80, height: 60)
+                    .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+            }
+        }
+    }
+}
+
+private struct ImageTile: View {
+    let clip: Clip
+    let selected: Bool
+    let onSelect: () -> Void
+    let onPick: () -> Void
+    let onPin: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Thumbnail surface — neutral checker-ish background so small
+            // images don't look like they're floating.
+            ZStack(alignment: .topTrailing) {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.08))
+
+                thumbnail
+                    .padding(6)
+
+                // Floating action buttons in the top-right of the thumbnail.
+                HStack(spacing: 4) {
+                    Button(action: onPin) {
+                        Image(systemName: clip.pinned ? "pin.fill" : "pin")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(clip.pinned ? .orange : .white)
+                            .frame(width: 22, height: 22)
+                            .background(.black.opacity(0.55), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(clip.pinned ? "Unpin" : "Pin")
+
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 22, height: 22)
+                            .background(.black.opacity(0.55), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(clip.pinned ? 0.35 : 1)
+                    .disabled(clip.pinned)
+                    .help(clip.pinned ? "Unpin first to delete" : "Delete")
+                }
+                .padding(6)
+            }
+            .frame(height: 110)
+            .clipped()
+
+            // Footer with dimensions + age, no inline buttons (use right-click).
+            HStack(spacing: 6) {
+                Text(dimensionsText)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text(relativeDate(clip.createdAt))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(Color(NSColor.controlBackgroundColor))
+        }
+        .background(Color(NSColor.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(
+                    selected ? Color.accentColor : Color.secondary.opacity(0.22),
+                    lineWidth: selected ? 2 : 0.5
+                )
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { onPick() }
+        .onTapGesture(count: 1) { onSelect() }
+        .contextMenu {
+            Button("Paste", action: onPick)
+            Button(clip.pinned ? "Unpin" : "Pin", action: onPin)
+            Divider()
+            Button("Delete", role: .destructive, action: onDelete)
+                .disabled(clip.pinned)
+        }
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        if let data = clip.thumbnail, let img = NSImage(data: data) {
+            Image(nsImage: img)
+                .resizable()
+                .interpolation(.medium)
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            Image(systemName: "photo")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var dimensionsText: String {
+        if clip.imageWidth > 0 && clip.imageHeight > 0 {
+            return "\(clip.imageWidth)×\(clip.imageHeight)"
+        }
+        return "Image"
     }
 
     private func relativeDate(_ d: Date) -> String {
