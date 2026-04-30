@@ -9,6 +9,18 @@ enum SortOrder: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum DateFilter: String, CaseIterable, Identifiable {
+    case all = "All time"
+    case today = "Today"
+    case yesterday = "Yesterday"
+    case last7 = "Last 7 days"
+    case last30 = "Last 30 days"
+    case specific = "Specific date"
+    var id: String { rawValue }
+
+    static var presets: [DateFilter] { [.all, .today, .yesterday, .last7, .last30] }
+}
+
 enum AppTab: Hashable { case text, image, groups }
 
 final class ClipStore: ObservableObject {
@@ -20,6 +32,8 @@ final class ClipStore: ObservableObject {
     @Published var selectedTab: AppTab = .text
     @Published var openedGroup: ClipGroup?
     @Published var sortOrder: SortOrder = .newest
+    @Published var dateFilter: DateFilter = .all
+    @Published var specificDate: Date = Date()
 
     func reload() {
         let freshClips = Database.shared.all()
@@ -76,7 +90,8 @@ final class ClipStore: ObservableObject {
                 }
             }
         }
-        return searched.sorted { a, b in
+        let dated = searched.filter(matchesDateFilter)
+        return dated.sorted { a, b in
             // Pinned items always float to the top, regardless of sort.
             if a.pinned != b.pinned { return a.pinned }
             switch sortOrder {
@@ -98,6 +113,35 @@ final class ClipStore: ObservableObject {
 
     private func sortSize(_ c: Clip) -> Int64 {
         c.kind == .image ? c.imageBytes : Int64(c.text.count)
+    }
+
+    private func matchesDateFilter(_ c: Clip) -> Bool {
+        let cal = Calendar.current
+        switch dateFilter {
+        case .all:
+            return true
+        case .today:
+            return cal.isDateInToday(c.createdAt)
+        case .yesterday:
+            return cal.isDateInYesterday(c.createdAt)
+        case .last7:
+            return c.createdAt > Date().addingTimeInterval(-7 * 86400)
+        case .last30:
+            return c.createdAt > Date().addingTimeInterval(-30 * 86400)
+        case .specific:
+            return cal.isDate(c.createdAt, inSameDayAs: specificDate)
+        }
+    }
+
+    /// Human-readable label shown in the date filter button tooltip and below
+    /// the popover trigger when a specific date is selected.
+    var dateFilterDisplay: String {
+        if dateFilter == .specific {
+            let f = DateFormatter()
+            f.dateStyle = .medium
+            return f.string(from: specificDate)
+        }
+        return dateFilter.rawValue
     }
 
     func selectTab(_ tab: AppTab) {
@@ -212,6 +256,8 @@ struct ClipListView: View {
     let onScreenshot: () -> Void
     let onEdit: (Clip) -> Void
 
+    @State private var showDatePopover = false
+
     var body: some View {
         VStack(spacing: 0) {
             TabStrip(
@@ -235,6 +281,33 @@ struct ClipListView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Take Screenshot")
+
+                Button {
+                    showDatePopover.toggle()
+                } label: {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(store.dateFilter == .all ? .secondary : Color.accentColor)
+                        .frame(width: 28, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("Date filter: \(store.dateFilterDisplay)")
+                .popover(isPresented: $showDatePopover, arrowEdge: .bottom) {
+                    DateFilterPopover(
+                        selected: store.dateFilter,
+                        specificDate: store.specificDate,
+                        onPickPreset: { preset in
+                            store.dateFilter = preset
+                            showDatePopover = false
+                        },
+                        onPickSpecific: { date in
+                            store.specificDate = date
+                            store.dateFilter = .specific
+                            showDatePopover = false
+                        }
+                    )
+                }
 
                 Menu {
                     ForEach(SortOrder.allCases) { order in
@@ -627,6 +700,293 @@ private struct Row: View {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
         return f.localizedString(for: d, relativeTo: Date())
+    }
+}
+
+private struct DateFilterPopover: View {
+    let selected: DateFilter
+    let specificDate: Date
+    let onPickPreset: (DateFilter) -> Void
+    let onPickSpecific: (Date) -> Void
+
+    @State private var pickerDate: Date
+
+    init(
+        selected: DateFilter,
+        specificDate: Date,
+        onPickPreset: @escaping (DateFilter) -> Void,
+        onPickSpecific: @escaping (Date) -> Void
+    ) {
+        self.selected = selected
+        self.specificDate = specificDate
+        self.onPickPreset = onPickPreset
+        self.onPickSpecific = onPickSpecific
+        _pickerDate = State(initialValue: specificDate)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+
+            VStack(spacing: 0) {
+                ForEach(DateFilter.presets) { preset in
+                    DateFilterRow(
+                        label: preset.rawValue,
+                        isActive: selected == preset,
+                        onTap: { onPickPreset(preset) }
+                    )
+                }
+            }
+            .padding(.bottom, 4)
+
+            Divider().padding(.horizontal, 14).padding(.vertical, 6)
+
+            sectionLabel("Pick a specific date")
+
+            MiniCalendar(selection: $pickerDate)
+                .padding(.horizontal, 14)
+                .padding(.top, 4)
+                .padding(.bottom, 8)
+
+            HStack {
+                if selected == .specific {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                        Text("Showing: \(formattedDate(specificDate))")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
+                } else {
+                    Text(formattedDate(pickerDate))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    onPickSpecific(pickerDate)
+                } label: {
+                    Text("Apply")
+                        .frame(minWidth: 60)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+            .padding(.bottom, 12)
+        }
+        .frame(width: 300)
+    }
+
+    private var header: some View {
+        HStack {
+            sectionLabel("Filter by date")
+                .padding(.leading, 0)
+            Spacer()
+            if selected != .all {
+                Button {
+                    onPickPreset(.all)
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "xmark.circle.fill")
+                        Text("Clear")
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 14)
+            }
+        }
+        .padding(.top, 12)
+        .padding(.bottom, 6)
+    }
+
+    private func sectionLabel(_ s: String) -> some View {
+        Text(s)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .tracking(0.4)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+    }
+
+    private func formattedDate(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        return f.string(from: d)
+    }
+}
+
+private struct MiniCalendar: View {
+    @Binding var selection: Date
+    @State private var displayedMonth: Date
+
+    private let calendar = Calendar.current
+
+    init(selection: Binding<Date>) {
+        self._selection = selection
+        self._displayedMonth = State(initialValue: selection.wrappedValue)
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            header
+            weekdayRow
+            daysGrid
+        }
+    }
+
+    private var monthLabel: String {
+        let f = DateFormatter()
+        f.dateFormat = "MMMM yyyy"
+        return f.string(from: displayedMonth)
+    }
+
+    private var header: some View {
+        HStack(spacing: 0) {
+            navButton(systemName: "chevron.left") { shift(-1) }
+            Spacer()
+            Text(monthLabel)
+                .font(.system(size: 13, weight: .semibold))
+            Spacer()
+            navButton(systemName: "chevron.right") { shift(1) }
+        }
+        .frame(height: 26)
+    }
+
+    private func navButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var weekdayRow: some View {
+        HStack(spacing: 0) {
+            ForEach(orderedWeekdaySymbols, id: \.self) { sym in
+                Text(sym)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var orderedWeekdaySymbols: [String] {
+        // veryShortWeekdaySymbols starts on Sunday — reorder for the user's
+        // first-weekday preference.
+        let symbols = calendar.veryShortWeekdaySymbols
+        let first = calendar.firstWeekday - 1
+        return Array(symbols[first...]) + Array(symbols[..<first])
+    }
+
+    private var daysGrid: some View {
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 7)
+        return LazyVGrid(columns: columns, spacing: 4) {
+            ForEach(daysToDisplay(), id: \.self) { date in
+                cell(for: date)
+            }
+        }
+    }
+
+    private func cell(for date: Date) -> some View {
+        let inMonth = calendar.isDate(date, equalTo: displayedMonth, toGranularity: .month)
+        let isSelected = calendar.isDate(date, inSameDayAs: selection)
+        let isToday = calendar.isDateInToday(date)
+        let day = calendar.component(.day, from: date)
+
+        let bg: Color = isSelected ? Color.accentColor : .clear
+        let fg: Color = isSelected
+            ? .white
+            : (inMonth ? .primary : Color.secondary.opacity(0.4))
+
+        return Button {
+            selection = date
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(bg)
+                if isToday && !isSelected {
+                    Circle()
+                        .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1.2)
+                }
+                Text("\(day)")
+                    .font(.system(size: 12, weight: isSelected || isToday ? .semibold : .regular))
+                    .foregroundStyle(fg)
+            }
+            .frame(width: 28, height: 28)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func shift(_ delta: Int) {
+        if let next = calendar.date(byAdding: .month, value: delta, to: displayedMonth) {
+            withAnimation(.easeOut(duration: 0.12)) {
+                displayedMonth = next
+            }
+        }
+    }
+
+    private func daysToDisplay() -> [Date] {
+        guard let monthStart = calendar.date(
+            from: calendar.dateComponents([.year, .month], from: displayedMonth)
+        ) else { return [] }
+        let weekdayOfFirst = calendar.component(.weekday, from: monthStart)
+        var offset = weekdayOfFirst - calendar.firstWeekday
+        if offset < 0 { offset += 7 }
+        let gridStart = calendar.date(byAdding: .day, value: -offset, to: monthStart) ?? monthStart
+
+        return (0..<42).compactMap { i in
+            calendar.date(byAdding: .day, value: i, to: gridStart)
+        }
+    }
+}
+
+private struct DateFilterRow: View {
+    let label: String
+    let isActive: Bool
+    let onTap: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .strokeBorder(
+                            isActive ? Color.accentColor : Color.secondary.opacity(0.45),
+                            lineWidth: 1.5
+                        )
+                        .frame(width: 14, height: 14)
+                    if isActive {
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 7, height: 7)
+                    }
+                }
+                Text(label)
+                    .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .background(
+                hovering ? Color.secondary.opacity(0.10) : Color.clear
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 
