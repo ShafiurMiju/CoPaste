@@ -85,6 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Storage Limits…", action: #selector(openStorageLimits), keyEquivalent: "")
         menu.addItem(withTitle: "Clear Unpinned History", action: #selector(clearHistory), keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Reset Accessibility Permission…", action: #selector(resetAccessibility), keyEquivalent: "")
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Copaste", action: #selector(quit), keyEquivalent: "q")
 
         for item in menu.items where item.action != nil {
@@ -106,6 +108,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openStorageLimits() {
         SettingsController.shared.show()
+    }
+
+    @objc private func resetAccessibility() {
+        let alert = NSAlert()
+        alert.messageText = "Reset Accessibility permission?"
+        alert.informativeText = """
+            This wipes Copaste's saved permission and quits the app.
+
+            Use this if Accessibility shows Copaste as enabled but pasting still doesn't work — that means macOS has a stale grant tied to an older build. After Copaste reopens, paste once and click Allow when macOS prompts you fresh.
+            """
+        alert.addButton(withTitle: "Reset & Quit")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.copaste.app"
+        let reset = Process()
+        reset.launchPath = "/usr/bin/tccutil"
+        reset.arguments = ["reset", "Accessibility", bundleID]
+        do {
+            try reset.run()
+            reset.waitUntilExit()
+            NSLog("[Copaste] tccutil reset Accessibility \(bundleID) → \(reset.terminationStatus)")
+        } catch {
+            NSLog("[Copaste] tccutil reset failed: \(error)")
+        }
+
+        // Fork a fresh instance, then exit. macOS only honours the new (clean)
+        // TCC state in a process started after the reset.
+        let appURL = Bundle.main.bundleURL
+        let relaunch = Process()
+        relaunch.launchPath = "/usr/bin/open"
+        relaunch.arguments = ["-n", appURL.path]
+        try? relaunch.run()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            NSApp.terminate(nil)
+        }
     }
 
     @objc private func clearHistory() {

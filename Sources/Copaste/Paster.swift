@@ -24,17 +24,26 @@ enum Paster {
     }
 
     private static func focusAndPaste(_ targetApp: NSRunningApplication?) {
+        // Hand focus back to the app the user was in. macOS Sonoma+ requires
+        // this call to come from an app with user-initiated focus — that's us
+        // right now because the user just hit the global shortcut.
         if let app = targetApp {
-            app.activate(options: [])
+            app.activate(options: [.activateAllWindows])
         }
-        // Tiny delay so the frontmost app is ready to receive the paste.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        // 50 ms isn't always enough for the previous app to regain keyboard
+        // focus before we post ⌘V — especially under load or with apps that
+        // restore many windows. 150 ms is reliable in practice without being
+        // perceptible.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             simulateCmdV()
         }
     }
 
     private static func simulateCmdV() {
         guard AXIsProcessTrusted() else {
+            // The clip is already on the system pasteboard, so the user can
+            // press ⌘V manually right now. We just can't post the keystroke
+            // for them. Show the standard "grant Accessibility" prompt.
             promptForAccessibility()
             return
         }
@@ -46,16 +55,18 @@ enum Paster {
         up?.flags = .maskCommand
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
+        NSLog("[Copaste] posted ⌘V")
     }
 
     private static func promptForAccessibility() {
         let alert = NSAlert()
         alert.messageText = "Enable Accessibility for Copaste"
         alert.informativeText = """
-            To paste automatically, Copaste needs Accessibility permission.
+            Copaste needs Accessibility permission to paste into other apps for you.
 
-            Open System Settings → Privacy & Security → Accessibility,
-            then enable Copaste.
+            Open System Settings → Privacy & Security → Accessibility, then toggle Copaste ON.
+
+            (Your clip is already on the clipboard — press ⌘V to paste manually in the meantime.)
             """
         alert.addButton(withTitle: "Open Settings")
         alert.addButton(withTitle: "Later")

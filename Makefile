@@ -6,7 +6,16 @@ INSTALL_DIR := /Applications
 DMG_STAGING := $(BUILD_DIR)/dmg
 DMG_FILE := $(BUILD_DIR)/$(APP_NAME).dmg
 
-.PHONY: all build bundle install run clean icon dmg
+# Codesigning identity. Defaults to the self-signed cert created by
+# `make setup-signing`. Looked up by SHA-1 hash so codesign doesn't require
+# the cert to be trusted (which would need an admin password to set up).
+# Falls back to ad-hoc ('-') if the cert isn't in the keychain.
+# Override at the command line: `make dmg SIGN_IDENTITY=...`.
+SELF_SIGNED_CN := Copaste Self-Signed
+SELF_SIGNED_SHA := $(shell security find-certificate -c "$(SELF_SIGNED_CN)" -Z 2>/dev/null | awk -F': ' '/SHA-1/{gsub(/ /, "", $$2); print $$2; exit}')
+SIGN_IDENTITY ?= $(if $(SELF_SIGNED_SHA),$(SELF_SIGNED_SHA),-)
+
+.PHONY: all build bundle install run clean icon dmg setup-signing
 
 all: bundle
 
@@ -27,7 +36,8 @@ bundle: build icon
 	cp "$$(swift build -c release --show-bin-path)/$(APP_NAME)" $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
 	cp Resources/Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	cp Resources/AppIcon.icns $(APP_BUNDLE)/Contents/Resources/AppIcon.icns
-	codesign --force --deep --sign - $(APP_BUNDLE)
+	@echo "→ Signing as: $(SIGN_IDENTITY)"
+	codesign --force --deep --identifier $(BUNDLE_ID) --sign "$(SIGN_IDENTITY)" $(APP_BUNDLE)
 	@echo "✓ Built $(APP_BUNDLE)"
 
 install: bundle
@@ -52,3 +62,9 @@ dmg: bundle
 clean:
 	rm -rf $(BUILD_DIR)
 	swift package clean
+
+# One-time setup: create a self-signed code signing cert in your login
+# keychain. After this, every `make dmg` signs with the same cert, so TCC
+# permissions (Accessibility, etc.) survive across rebuilds.
+setup-signing:
+	@bash tools/setup-signing.sh
