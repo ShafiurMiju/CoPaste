@@ -4,8 +4,8 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let watcher = ClipboardWatcher()
-    private let store = ClipStore()
-    private var popup: PopupController!
+    let store = ClipStore()
+    var popup: PopupController!
     private var showItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -59,7 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "Copaste")
         }
+        statusItem.menu = buildAppMenu()
+    }
 
+    /// Builds a fresh app menu — used by the status-bar item and by the
+    /// gear button in the popup. Rebuilt on each call so toggle states
+    /// (Launch at Login, Always on Top) reflect current values.
+    private func buildAppMenu() -> NSMenu {
         let menu = NSMenu()
         let show = NSMenuItem(
             title: "Show Copaste  (\(HotKeyManager.shared.current.display))",
@@ -92,12 +98,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for item in menu.items where item.action != nil {
             item.target = self
         }
-        statusItem.menu = menu
+        return menu
     }
 
     @objc private func showPopup() { popup.toggle() }
 
-    @objc private func openShortcutRecorder() {
+    @objc func openShortcutRecorder() {
         ShortcutRecorderController.shared.show()
     }
 
@@ -110,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SettingsController.shared.show()
     }
 
-    @objc private func resetAccessibility() {
+    @objc func resetAccessibility() {
         let alert = NSAlert()
         alert.messageText = "Reset Accessibility permission?"
         alert.informativeText = """
@@ -146,7 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func clearHistory() {
+    @objc func clearHistory() {
         let alert = NSAlert()
         alert.messageText = "Clear all unpinned clips?"
         alert.informativeText = "Pinned items will be kept."

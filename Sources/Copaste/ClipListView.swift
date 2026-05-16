@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 import UniformTypeIdentifiers
 
 struct ClipDragID: Codable, Transferable {
@@ -382,6 +383,7 @@ struct ClipListView: View {
     let onEdit: (Clip) -> Void
 
     @State private var showDatePopover = false
+    @State private var showingSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -390,9 +392,20 @@ struct ClipListView: View {
                 textCount: store.textCount,
                 imageCount: store.imageCount,
                 groupCount: store.groups.count,
-                onSelect: { store.selectTab($0) }
+                settingsActive: showingSettings,
+                onSelect: { tab in
+                    showingSettings = false
+                    store.selectTab(tab)
+                },
+                onSettings: { showingSettings.toggle() }
             )
 
+            if showingSettings {
+                SettingsPageView(
+                    onCloseWindow: onClose,
+                    onReloadStore: { store.reload() }
+                )
+            } else {
             HStack(spacing: 8) {
                 SearchField(text: $store.query, onSubmit: pickCurrent, onCancel: onClose,
                             onArrowDown: { move(1) }, onArrowUp: { move(-1) })
@@ -628,6 +641,7 @@ struct ClipListView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+            }
         }
         .background(KeyCatcher(
             onEnter: pickCurrent,
@@ -1375,12 +1389,28 @@ private struct TabStrip: View {
     let textCount: Int
     let imageCount: Int
     let groupCount: Int
+    let settingsActive: Bool
     let onSelect: (AppTab) -> Void
+    let onSettings: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
-            // Left padding clears the traffic-light buttons.
-            Color.clear.frame(width: 70, height: 1)
+            // Left padding clears the close button, then a gear button sits
+            // beside it for quick access to settings.
+            HStack(spacing: 0) {
+                Color.clear.frame(width: 30, height: 1)
+                Button(action: onSettings) {
+                    Image(systemName: settingsActive ? "gearshape.fill" : "gearshape")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(settingsActive ? Color.accentColor : .secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(settingsActive ? "Close Settings" : "Settings")
+                Spacer(minLength: 0)
+            }
+            .frame(width: 70)
 
             HStack(spacing: 24) {
                 tabButton(.text, label: "Text", count: textCount)
@@ -1766,5 +1796,175 @@ private struct KeyCatcher: NSViewRepresentable {
                 return event
             }
         }
+    }
+}
+
+// MARK: - Settings page (in-popup tab)
+
+private struct SettingsPageView: View {
+    let onCloseWindow: () -> Void
+    let onReloadStore: () -> Void
+
+    @State private var launchAtLogin: Bool = (SMAppService.mainApp.status == .enabled)
+    @State private var alwaysOnTop: Bool = (NSApp.delegate as? AppDelegate)?.popup.alwaysOnTop ?? true
+    @State private var showClearAlert = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                sectionHeader("Keyboard")
+                infoRow(
+                    icon: "command",
+                    title: "Show Copaste",
+                    trailing: HotKeyManager.shared.current.display
+                )
+                actionRow(icon: "pencil", title: "Change Shortcut…") {
+                    ShortcutRecorderController.shared.show()
+                }
+
+                sectionHeader("Behavior")
+                toggleRow(icon: "power", title: "Launch at Login", isOn: $launchAtLogin) { newValue in
+                    do {
+                        if newValue {
+                            try SMAppService.mainApp.register()
+                        } else {
+                            try SMAppService.mainApp.unregister()
+                        }
+                    } catch {
+                        launchAtLogin = !newValue
+                        NSAlert(error: error).runModal()
+                    }
+                }
+                toggleRow(icon: "pin.fill", title: "Always on Top", isOn: $alwaysOnTop) { newValue in
+                    (NSApp.delegate as? AppDelegate)?.popup.alwaysOnTop = newValue
+                }
+
+                sectionHeader("Clipboard")
+                actionRow(icon: "camera.viewfinder", title: "Take Screenshot…") {
+                    onCloseWindow()
+                    Screenshot.captureInteractive()
+                }
+                actionRow(icon: "internaldrive", title: "Storage Limits…") {
+                    SettingsController.shared.show()
+                }
+                actionRow(
+                    icon: "trash",
+                    title: "Clear Unpinned History",
+                    destructive: true
+                ) {
+                    showClearAlert = true
+                }
+
+                sectionHeader("Permissions")
+                actionRow(icon: "lock.shield", title: "Reset Accessibility Permission…") {
+                    (NSApp.delegate as? AppDelegate)?.resetAccessibility()
+                }
+
+                Divider().padding(.vertical, 8)
+
+                actionRow(
+                    icon: "power",
+                    title: "Quit Copaste",
+                    destructive: true
+                ) {
+                    NSApp.terminate(nil)
+                }
+                .padding(.bottom, 12)
+            }
+        }
+        .alert("Clear all unpinned clips?", isPresented: $showClearAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) {
+                Database.shared.clearUnpinned()
+                onReloadStore()
+            }
+        } message: {
+            Text("Pinned items will be kept.")
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .tracking(0.5)
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+            .padding(.bottom, 6)
+    }
+
+    private func infoRow(icon: String, title: String, trailing: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .frame(width: 22)
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.system(size: 13))
+            Spacer()
+            Text(trailing)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.secondary.opacity(0.12))
+                )
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private func actionRow(
+        icon: String,
+        title: String,
+        destructive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .frame(width: 22)
+                    .foregroundStyle(destructive ? Color.red.opacity(0.85) : .secondary)
+                Text(title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(destructive ? Color.red.opacity(0.95) : .primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary.opacity(0.5))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toggleRow(
+        icon: String,
+        title: String,
+        isOn: Binding<Bool>,
+        onChange: @escaping (Bool) -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .frame(width: 22)
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.system(size: 13))
+            Spacer()
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                .onChange(of: isOn.wrappedValue) { newValue in
+                    onChange(newValue)
+                }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
     }
 }
