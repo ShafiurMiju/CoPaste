@@ -688,14 +688,28 @@ struct ClipListView: View {
     }
 
     /// Click handler used by Row and ImageTile. Cmd+click toggles a clip in
-    /// the multi-selection set; a plain click clears multi and selects just
-    /// the clicked clip.
+    /// the multi-selection set; a plain click clears multi, selects the
+    /// clicked clip, and copies it to the system clipboard (so it becomes
+    /// the current pasteboard item without auto-pasting — double-click /
+    /// Enter still does the auto-paste).
     private func selectClip(_ clip: Clip) {
         let cmd = NSEvent.modifierFlags.contains(.command)
         if cmd {
             store.toggleMultiSelection(clip.id)
         } else {
             store.selectSingle(clip.id)
+            copyClipToClipboard(clip)
+        }
+    }
+
+    private func copyClipToClipboard(_ clip: Clip) {
+        switch clip.kind {
+        case .text:
+            Paster.copyText(clip.text)
+        case .image:
+            if let data = Database.shared.imageData(for: clip) {
+                Paster.copyImage(data)
+            }
         }
     }
 

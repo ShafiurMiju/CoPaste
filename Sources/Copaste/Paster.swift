@@ -3,15 +3,28 @@ import Carbon.HIToolbox
 
 enum Paster {
     static func copyAndPaste(_ text: String, into targetApp: NSRunningApplication?) {
+        copyText(text)
+        focusAndPaste(targetApp)
+    }
+
+    static func copyAndPasteImage(_ data: Data, into targetApp: NSRunningApplication?) {
+        copyImage(data)
+        focusAndPaste(targetApp)
+    }
+
+    /// Copies text onto the system pasteboard without auto-pasting — the
+    /// clip becomes the "current" clipboard item, ready for the user to
+    /// ⌘V anywhere.
+    static func copyText(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
         // Mark as internal so ClipboardWatcher ignores it.
         pb.setData(Data(), forType: NSPasteboard.PasteboardType("com.copaste.internal"))
         pb.setString(text, forType: .string)
-        focusAndPaste(targetApp)
     }
 
-    static func copyAndPasteImage(_ data: Data, into targetApp: NSRunningApplication?) {
+    /// Copies image data onto the system pasteboard without auto-pasting.
+    static func copyImage(_ data: Data) {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setData(Data(), forType: NSPasteboard.PasteboardType("com.copaste.internal"))
@@ -20,7 +33,6 @@ enum Paster {
         if let img = NSImage(data: data), let tiff = img.tiffRepresentation {
             pb.setData(tiff, forType: .tiff)
         }
-        focusAndPaste(targetApp)
     }
 
     private static func focusAndPaste(_ targetApp: NSRunningApplication?) {
