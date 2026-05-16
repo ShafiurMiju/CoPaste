@@ -1806,7 +1806,7 @@ private struct SettingsPageView: View {
     let onReloadStore: () -> Void
 
     @State private var launchAtLogin: Bool = (SMAppService.mainApp.status == .enabled)
-    @State private var alwaysOnTop: Bool = (NSApp.delegate as? AppDelegate)?.popup.alwaysOnTop ?? true
+    @AppStorage("Copaste.alwaysOnTop") private var alwaysOnTop: Bool = true
     @State private var showClearAlert = false
 
     var body: some View {
@@ -1949,20 +1949,26 @@ private struct SettingsPageView: View {
         isOn: Binding<Bool>,
         onChange: @escaping (Bool) -> Void
     ) -> some View {
-        HStack(spacing: 10) {
+        // Wraps `isOn` so the side effect fires inside the setter — more
+        // reliable than `.onChange(of:)`, which can miss rapid toggles or
+        // run on a later tick than the underlying state write.
+        let wrapped = Binding<Bool>(
+            get: { isOn.wrappedValue },
+            set: { newValue in
+                isOn.wrappedValue = newValue
+                onChange(newValue)
+            }
+        )
+        return HStack(spacing: 10) {
             Image(systemName: icon)
                 .frame(width: 22)
                 .foregroundStyle(.secondary)
             Text(title)
                 .font(.system(size: 13))
             Spacer()
-            Toggle("", isOn: isOn)
+            Toggle("", isOn: wrapped)
                 .toggleStyle(.switch)
                 .labelsHidden()
-                .controlSize(.small)
-                .onChange(of: isOn.wrappedValue) { newValue in
-                    onChange(newValue)
-                }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 4)

@@ -46,6 +46,9 @@ final class SettingsController {
         )
         w.title = "History Limits"
         w.isReleasedWhenClosed = false
+        // Sits above the popup's `.floating` level so the dialog stays
+        // visible even when "Always on Top" is on for the popup.
+        w.level = .modalPanel
         self.window = w
     }
 }

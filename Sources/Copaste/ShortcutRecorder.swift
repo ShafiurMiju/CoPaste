@@ -32,6 +32,9 @@ final class ShortcutRecorderController {
         w.styleMask = [.titled, .closable]
         w.isReleasedWhenClosed = false
         w.setContentSize(NSSize(width: 380, height: 210))
+        // Sits above the popup's `.floating` level so the dialog stays
+        // visible even when "Always on Top" is on for the popup.
+        w.level = .modalPanel
         self.window = w
     }
 }
