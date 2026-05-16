@@ -152,6 +152,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func resetScreenRecording() {
+        let alert = NSAlert()
+        alert.messageText = "Reset Screen Recording permission?"
+        alert.informativeText = """
+            This wipes Copaste's saved Screen Recording permission and quits the app.
+
+            Use this if macOS keeps prompting for Screen Recording even though you've already allowed it — that means the saved grant is tied to an older build. After Copaste reopens, copy a screenshot to trigger the prompt and click Allow when macOS asks.
+            """
+        alert.addButton(withTitle: "Reset & Quit")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.copaste.app"
+        let reset = Process()
+        reset.launchPath = "/usr/bin/tccutil"
+        reset.arguments = ["reset", "ScreenCapture", bundleID]
+        do {
+            try reset.run()
+            reset.waitUntilExit()
+            NSLog("[Copaste] tccutil reset ScreenCapture \(bundleID) → \(reset.terminationStatus)")
+        } catch {
+            NSLog("[Copaste] tccutil reset failed: \(error)")
+        }
+
+        let appURL = Bundle.main.bundleURL
+        let relaunch = Process()
+        relaunch.launchPath = "/usr/bin/open"
+        relaunch.arguments = ["-n", appURL.path]
+        try? relaunch.run()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            NSApp.terminate(nil)
+        }
+    }
+
     @objc func clearHistory() {
         let alert = NSAlert()
         alert.messageText = "Clear all unpinned clips?"

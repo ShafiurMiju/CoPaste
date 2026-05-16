@@ -1,17 +1,28 @@
 import Foundation
+import Carbon.HIToolbox
+import CoreGraphics
 
 enum Screenshot {
-    /// Launches the macOS system screen-capture UI in interactive (region
-    /// selection) mode and writes the result to the clipboard. Our
-    /// ClipboardWatcher then picks it up and adds it to the Images tab.
+    /// Triggers macOS's built-in interactive screenshot-to-clipboard
+    /// (⌘⇧⌃4) by posting the keystroke instead of launching
+    /// `/usr/sbin/screencapture` as a child process. TCC attributes child
+    /// processes to their parent, so spawning screencapture makes macOS
+    /// demand Screen Recording permission from Copaste — and that grant
+    /// breaks on every signature change. Routing through the system
+    /// shortcut lets the OS handle the capture itself, so no Screen
+    /// Recording prompt is ever attributed to us. We already require
+    /// Accessibility for paste, which is also what lets us post this
+    /// keystroke.
     static func captureInteractive() {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        task.arguments = ["-i", "-c"]
-        do {
-            try task.run()
-        } catch {
-            NSLog("[Copaste] screencapture failed: \(error)")
-        }
+        let src = CGEventSource(stateID: .combinedSessionState)
+        let key4 = CGKeyCode(kVK_ANSI_4)
+        let flags: CGEventFlags = [.maskCommand, .maskShift, .maskControl]
+        let down = CGEvent(keyboardEventSource: src, virtualKey: key4, keyDown: true)
+        let up = CGEvent(keyboardEventSource: src, virtualKey: key4, keyDown: false)
+        down?.flags = flags
+        up?.flags = flags
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+        NSLog("[Copaste] posted ⌘⇧⌃4 for interactive screenshot")
     }
 }

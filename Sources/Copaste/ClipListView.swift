@@ -1873,6 +1873,9 @@ private struct SettingsPageView: View {
                 actionRow(icon: "lock.shield", title: "Reset Accessibility Permission…") {
                     (NSApp.delegate as? AppDelegate)?.resetAccessibility()
                 }
+                actionRow(icon: "rectangle.on.rectangle", title: "Reset Screen Recording Permission…") {
+                    (NSApp.delegate as? AppDelegate)?.resetScreenRecording()
+                }
 
                 Divider().padding(.vertical, 8)
 
