@@ -6,24 +6,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let watcher = ClipboardWatcher()
     let store = ClipStore()
     var popup: PopupController!
+    let syncServer = SyncServer()
     private var showItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = Database.shared
         store.reload()
 
+        PopupController.migrateDefaultsIfNeeded()
         popup = PopupController(store: store)
 
         watcher.onNewClip = { [weak self] payload in
             switch payload {
             case .text(let s):
                 Database.shared.insert(s)
+                self?.syncServer.broadcast(text: s)
             case .image(let data):
                 Database.shared.insertImage(data)
+                self?.syncServer.broadcast(image: data)
             }
             self?.store.reload()
         }
         watcher.start()
+
+        syncServer.delegate = self
+        syncServer.start()
 
         HotKeyManager.shared.onHotKey = { [weak self] in
             NSLog("[Copaste] onHotKey callback, toggling popup")
@@ -218,4 +225,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+}
+
+extension AppDelegate: SyncServerDelegate {
+    /// Incoming text clip from a paired device. We save it, copy it to the
+    /// system pasteboard (via Paster.copyText, which marks the write as
+    /// internal so ClipboardWatcher doesn't re-broadcast it back), and
+    /// reload the popup list.
+    func syncServer(_ server: SyncServer, didReceiveText text: String) {
+        NSLog("[Copaste] sync: incoming text (\(text.count) chars)")
+        Database.shared.insert(text)
+        Paster.copyText(text)
+        store.reload()
+    }
+
+    func syncServer(_ server: SyncServer, didReceiveImage data: Data) {
+        NSLog("[Copaste] sync: incoming image (\(data.count) bytes)")
+        Database.shared.insertImage(data)
+        Paster.copyImage(data)
+        store.reload()
+    }
+
+    func syncServer(_ server: SyncServer, peerCountChanged count: Int) {
+        NSLog("[Copaste] sync: peer count = \(count)")
+    }
+
+    func syncServer(_ server: SyncServer, didPairDeviceNamed name: String) {
+        NSLog("[Copaste] sync: paired with \(name)")
+    }
 }

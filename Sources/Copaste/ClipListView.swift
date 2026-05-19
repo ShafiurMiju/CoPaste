@@ -408,7 +408,9 @@ struct ClipListView: View {
             } else {
             HStack(spacing: 8) {
                 SearchField(text: $store.query, onSubmit: pickCurrent, onCancel: onClose,
-                            onArrowDown: { move(1) }, onArrowUp: { move(-1) })
+                            onArrowDown: { move(1) }, onArrowUp: { move(-1) },
+                            onArrowLeft: { cycleTab(-1) },
+                            onArrowRight: { cycleTab(1) })
 
                 Button(action: onScreenshot) {
                     Image(systemName: "camera.viewfinder")
@@ -515,45 +517,8 @@ struct ClipListView: View {
                             onRename: { g, n in store.renameGroup(g, to: n) },
                             onDelete: { store.deleteGroup($0) }
                         )
-                    } else if (store.selectedTab == .image) ||
-                              (store.selectedTab == .groups && store.openedGroup != nil &&
-                               store.filtered.allSatisfy { $0.kind == .image }
-                               && !store.filtered.isEmpty) {
-                        // Image grid view (Image tab, OR a group containing only images)
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 150), spacing: 10)],
-                            spacing: 10
-                        ) {
-                            ForEach(store.filtered) { clip in
-                                ImageTile(
-                                    clip: clip,
-                                    selected: store.multiSelected.contains(clip.id) || store.selectedID == clip.id,
-                                    onSelect: { selectClip(clip) },
-                                    onPick: { onPick(clip) },
-                                    onPin: { store.togglePin(clip) },
-                                    onDelete: { store.delete(clip) },
-                                    groups: store.groups,
-                                    membershipFor: { _ in
-                                        store.openedGroup.map { [$0] } ?? []
-                                    },
-                                    onAddToGroup: { g in store.addClip(clip, toGroup: g) },
-                                    onRemoveFromGroup: { g in store.removeClip(clip, fromGroup: g) },
-                                    onCreateGroupAndAdd: { name in
-                                        if let g = store.createGroup(name: name) {
-                                            store.addClip(clip, toGroup: g)
-                                        }
-                                    },
-                                    onDropFrom: { sourceID in
-                                        store.swapByDrag(sourceID: sourceID, targetID: clip.id)
-                                    }
-                                )
-                                .id(clip.id)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
                     } else {
-                        // Row list view (Text tab, OR group with mixed/text content)
+                        // Row list view (Text, Image, or group content)
                         LazyVStack(spacing: 0) {
                             ForEach(store.filtered) { clip in
                                 Row(
@@ -681,13 +646,22 @@ struct ClipListView: View {
         store.scrollTargetID = items[next].id
     }
 
+    /// Cycle ←/→ across the Text / Images / Groups tabs. Used by the
+    /// SearchField when its text is empty, so left/right are free.
+    private func cycleTab(_ delta: Int) {
+        let tabs: [AppTab] = [.text, .image, .groups]
+        let idx = tabs.firstIndex(of: store.selectedTab) ?? 0
+        let next = (idx + delta + tabs.count) % tabs.count
+        store.selectTab(tabs[next])
+    }
+
     private var deletableCount: Int {
         // Pinned clips are skipped by deleteSelected — show the user how many
         // will actually be removed.
         store.clips.filter { store.multiSelected.contains($0.id) && !$0.pinned }.count
     }
 
-    /// Click handler used by Row and ImageTile. Cmd+click toggles a clip in
+    /// Click handler used by Row. Cmd+click toggles a clip in
     /// the multi-selection set; a plain click clears multi, selects the
     /// clicked clip, and copies it to the system clipboard (so it becomes
     /// the current pasteboard item without auto-pasting — double-click /
@@ -771,7 +745,7 @@ private struct Row: View {
                             .lineLimit(2)
                             .font(.system(size: 13, design: clip.isPassword ? .monospaced : .default))
                     case .image:
-                        ImagePreview(clip: clip)
+                        ImagePreview(clip: clip, selected: selected)
                     }
                     Text(subtitle)
                         .font(.caption2)
@@ -1475,160 +1449,47 @@ private struct TabStrip: View {
 
 private struct ImagePreview: View {
     let clip: Clip
-
-    var body: some View {
-        Group {
-            if let data = clip.thumbnail, let img = NSImage(data: data) {
-                Image(nsImage: img)
-                    .resizable()
-                    .interpolation(.medium)
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 220, maxHeight: 80, alignment: .leading)
-                    .cornerRadius(4)
-            } else {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.secondary.opacity(0.15))
-                    .frame(width: 80, height: 60)
-                    .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
-            }
-        }
-    }
-}
-
-private struct ImageTile: View {
-    let clip: Clip
     let selected: Bool
-    let onSelect: () -> Void
-    let onPick: () -> Void
-    let onPin: () -> Void
-    let onDelete: () -> Void
-    let groups: [ClipGroup]
-    let membershipFor: (Clip) -> [ClipGroup]
-    let onAddToGroup: (ClipGroup) -> Void
-    let onRemoveFromGroup: (ClipGroup) -> Void
-    let onCreateGroupAndAdd: (String) -> Void
-    let onDropFrom: (Int64) -> Void
 
-    @State private var showCreateGroupAlert = false
-    @State private var newGroupName = ""
-    @State private var isDropTarget = false
+    @State private var showLargePreview = false
+    @State private var hoverTask: DispatchWorkItem?
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Thumbnail surface — neutral checker-ish background so small
-            // images don't look like they're floating.
-            ZStack(alignment: .topTrailing) {
-                Rectangle()
-                    .fill(Color.secondary.opacity(0.08))
-
-                thumbnail
-                    .padding(6)
-
-                // Floating action buttons in the top-right of the thumbnail.
-                HStack(spacing: 4) {
-                    Button(action: onPin) {
-                        Image(systemName: clip.pinned ? "pin.fill" : "pin")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(clip.pinned ? .orange : .white)
-                            .frame(width: 22, height: 22)
-                            .background(.black.opacity(0.55), in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(clip.pinned ? "Unpin" : "Pin")
-
-                    Button(action: onDelete) {
-                        Image(systemName: "trash")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 22, height: 22)
-                            .background(.black.opacity(0.55), in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .opacity(clip.pinned ? 0.35 : 1)
-                    .disabled(clip.pinned)
-                    .help(clip.pinned ? "Unpin first to delete" : "Delete")
-                }
-                .padding(6)
-            }
-            .frame(height: 110)
-            .clipped()
-
-            // Footer with dimensions + age, no inline buttons (use right-click).
-            HStack(spacing: 6) {
-                Text(dimensionsText)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Text(relativeDate(clip.createdAt))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
-            .background(Color(NSColor.controlBackgroundColor))
-        }
-        .background(Color(NSColor.controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(
-                    isDropTarget ? Color.accentColor
-                        : (selected ? Color.accentColor : Color.secondary.opacity(0.22)),
-                    lineWidth: isDropTarget ? 2.5 : (selected ? 2 : 0.5)
-                )
-        )
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) { onPick() }
-        .onTapGesture(count: 1) { onSelect() }
-        .draggable(ClipDragID(id: clip.id)) {
-            tileDragPreview
-        }
-        .dropDestination(for: ClipDragID.self) { items, _ in
-            guard let item = items.first else { return false }
-            onDropFrom(item.id)
-            return true
-        } isTargeted: { isDropTarget = $0 }
-        .contextMenu {
-            Button("Paste", action: onPick)
-            Button(clip.pinned ? "Unpin" : "Pin", action: onPin)
-
-            Menu("Add to Group") {
-                ForEach(groups) { g in
-                    Button(g.name) { onAddToGroup(g) }
-                }
-                if !groups.isEmpty { Divider() }
-                Button("New Group…") {
-                    newGroupName = ""
-                    showCreateGroupAlert = true
+        thumbnail
+            .onHover { hovering in
+                hoverTask?.cancel()
+                if hovering {
+                    // Short delay so the popover doesn't flicker open
+                    // just because the cursor crossed the thumbnail.
+                    let task = DispatchWorkItem { showLargePreview = true }
+                    hoverTask = task
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: task)
+                } else if !selected {
+                    showLargePreview = false
                 }
             }
-
-            let memberships = membershipFor(clip)
-            if !memberships.isEmpty {
-                Menu("Remove from Group") {
-                    ForEach(memberships) { g in
-                        Button(g.name) { onRemoveFromGroup(g) }
-                    }
+            // Keyboard navigation: whenever this row becomes the cursor
+            // selection (arrow keys, mouse click, etc.), pop the preview
+            // immediately. When the cursor moves away, dismiss it.
+            .onChange(of: selected) { isSelected in
+                if isSelected {
+                    showLargePreview = true
+                } else {
+                    showLargePreview = false
+                    hoverTask?.cancel()
                 }
             }
-
-            Divider()
-            Button("Delete", role: .destructive, action: onDelete)
-                .disabled(clip.pinned)
-        }
-        .alert("New Group", isPresented: $showCreateGroupAlert) {
-            TextField("Group name", text: $newGroupName)
-            Button("Create") {
-                onCreateGroupAndAdd(newGroupName)
+            // onChange only fires on transitions, so the very first row
+            // (already selected when its ImagePreview appears) wouldn't
+            // open its popover. Cover that case explicitly.
+            .onAppear {
+                if selected {
+                    DispatchQueue.main.async { showLargePreview = true }
+                }
             }
-            .disabled(newGroupName.trimmingCharacters(in: .whitespaces).isEmpty)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Enter a name for the new group. The image will be added to it.")
-        }
+            .popover(isPresented: $showLargePreview, arrowEdge: .trailing) {
+                largePreview
+            }
     }
 
     @ViewBuilder
@@ -1637,53 +1498,45 @@ private struct ImageTile: View {
             Image(nsImage: img)
                 .resizable()
                 .interpolation(.medium)
-                .aspectRatio(contentMode: .fit)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 40, height: 40)
+                .clipped()
+                .cornerRadius(4)
         } else {
-            Image(systemName: "photo")
-                .font(.title2)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.secondary.opacity(0.15))
+                .frame(width: 40, height: 40)
+                .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
         }
     }
 
     @ViewBuilder
-    private var tileDragPreview: some View {
-        ZStack {
-            Color.secondary.opacity(0.08)
-            if let data = clip.thumbnail, let img = NSImage(data: data) {
-                Image(nsImage: img)
-                    .resizable()
-                    .interpolation(.medium)
-                    .aspectRatio(contentMode: .fit)
-                    .padding(4)
+    private var largePreview: some View {
+        Group {
+            if let data = Database.shared.imageData(for: clip),
+               let img = NSImage(data: data) {
+                imageView(img)
+            } else if let data = clip.thumbnail, let img = NSImage(data: data) {
+                imageView(img)
             } else {
                 Image(systemName: "photo")
+                    .font(.largeTitle)
                     .foregroundStyle(.secondary)
+                    .padding(40)
             }
         }
-        .frame(width: 110, height: 80)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.accentColor.opacity(0.6), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.20), radius: 6, x: 0, y: 3)
     }
 
-    private var dimensionsText: String {
-        if clip.imageWidth > 0 && clip.imageHeight > 0 {
-            return "\(clip.imageWidth)×\(clip.imageHeight)"
-        }
-        return "Image"
-    }
-
-    private func relativeDate(_ d: Date) -> String {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        return f.localizedString(for: d, relativeTo: Date())
+    private func imageView(_ img: NSImage) -> some View {
+        Image(nsImage: img)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(maxHeight: 600)
+            .padding(8)
     }
 }
+
 
 // MARK: - Search field (SwiftUI doesn't handle arrow keys on TextField nicely)
 
@@ -1693,6 +1546,8 @@ private struct SearchField: NSViewRepresentable {
     let onCancel: () -> Void
     let onArrowDown: () -> Void
     let onArrowUp: () -> Void
+    let onArrowLeft: () -> Void
+    let onArrowRight: () -> Void
 
     func makeNSView(context: Context) -> NSSearchField {
         let f = NSSearchField()
@@ -1731,6 +1586,19 @@ private struct SearchField: NSViewRepresentable {
                 parent.onArrowDown(); return true
             case #selector(NSResponder.moveUp(_:)):
                 parent.onArrowUp(); return true
+            case #selector(NSResponder.moveLeft(_:)):
+                // Only cycle tabs when the search field is empty — when
+                // the user is actually typing, ←/→ stay as text-cursor
+                // movement so editing still works normally.
+                if parent.text.isEmpty {
+                    parent.onArrowLeft(); return true
+                }
+                return false
+            case #selector(NSResponder.moveRight(_:)):
+                if parent.text.isEmpty {
+                    parent.onArrowRight(); return true
+                }
+                return false
             default:
                 return false
             }
@@ -1821,11 +1689,61 @@ private struct SettingsPageView: View {
 
     @State private var launchAtLogin: Bool = (SMAppService.mainApp.status == .enabled)
     @AppStorage("Copaste.alwaysOnTop") private var alwaysOnTop: Bool = true
+    @AppStorage("Copaste.rememberPosition") private var rememberPosition: Bool = false
+    @AppStorage("Copaste.windowWidth") private var windowWidthStored: Double = 520
+    @AppStorage("Copaste.windowHeight") private var windowHeightStored: Double = 520
+    @State private var widthText: String = ""
+    @State private var heightText: String = ""
     @State private var showClearAlert = false
+
+    // Live status of the local sync server. Polled every 1s so the user
+    // sees a phone connect/disconnect — and the pairing countdown tick —
+    // without having to leave + re-enter the settings page.
+    @State private var syncRunning: Bool = false
+    @State private var syncPort: UInt16 = 0
+    @State private var syncPeerCount: Int = 0
+    @State private var pairingCode: String? = nil
+    @State private var pairingRemaining: Int = 0
+    @State private var pairedDevices: [SyncStorage.PairedDevice] = []
+    private let syncTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                sectionHeader("Sync")
+                infoRow(
+                    icon: syncRunning ? "wifi" : "wifi.slash",
+                    title: "Local Network",
+                    trailing: syncRunning ? "Port \(syncPort)" : "Off"
+                )
+                infoRow(
+                    icon: "iphone",
+                    title: "Connected devices",
+                    trailing: "\(syncPeerCount)"
+                )
+
+                if let code = pairingCode {
+                    pairingCard(code: code, remaining: pairingRemaining)
+                } else {
+                    actionRow(icon: "plus.circle", title: "Pair New Device") {
+                        let _ = (NSApp.delegate as? AppDelegate)?.syncServer.beginPairing()
+                        refreshSyncStatus()
+                    }
+                }
+
+                if !pairedDevices.isEmpty {
+                    Text("PAIRED")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .tracking(0.5)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 8)
+                        .padding(.bottom, 4)
+                    ForEach(pairedDevices) { device in
+                        pairedDeviceRow(device)
+                    }
+                }
+
                 sectionHeader("Keyboard")
                 infoRow(
                     icon: "command",
@@ -1851,6 +1769,42 @@ private struct SettingsPageView: View {
                 }
                 toggleRow(icon: "pin.fill", title: "Always on Top", isOn: $alwaysOnTop) { newValue in
                     (NSApp.delegate as? AppDelegate)?.popup.alwaysOnTop = newValue
+                }
+
+                sectionHeader("Window")
+                dimensionRow(
+                    icon: "arrow.left.and.right",
+                    title: "Width",
+                    text: $widthText
+                ) {
+                    if let v = Double(widthText), v > 0 {
+                        (NSApp.delegate as? AppDelegate)?.popup.windowWidth = CGFloat(v)
+                    }
+                    widthText = "\(Int(windowWidthStored))"
+                }
+                dimensionRow(
+                    icon: "arrow.up.and.down",
+                    title: "Height",
+                    text: $heightText
+                ) {
+                    if let v = Double(heightText), v > 0 {
+                        (NSApp.delegate as? AppDelegate)?.popup.windowHeight = CGFloat(v)
+                    }
+                    heightText = "\(Int(windowHeightStored))"
+                }
+                toggleRow(
+                    icon: "mappin.and.ellipse",
+                    title: "Remember last position",
+                    isOn: $rememberPosition
+                ) { _ in /* AppStorage already wrote the new value */ }
+                actionRow(icon: "arrow.counterclockwise", title: "Reset to default") {
+                    (NSApp.delegate as? AppDelegate)?.popup.resetWindowToDefaults()
+                    // Refresh the local field text now that the stored
+                    // values just changed — onChange picks this up but the
+                    // remove-then-default isn't a "change" in @AppStorage's
+                    // eyes if the value was already the default.
+                    widthText = "\(Int(windowWidthStored))"
+                    heightText = "\(Int(windowHeightStored))"
                 }
 
                 sectionHeader("Clipboard")
@@ -1898,6 +1852,107 @@ private struct SettingsPageView: View {
         } message: {
             Text("Pinned items will be kept.")
         }
+        .onAppear {
+            refreshSyncStatus()
+            widthText = "\(Int(windowWidthStored))"
+            heightText = "\(Int(windowHeightStored))"
+        }
+        .onReceive(syncTimer) { _ in refreshSyncStatus() }
+        // Reflect drag-resizes done with the mouse so the text field
+        // doesn't drift out of sync with the live panel size.
+        .onChange(of: windowWidthStored) { new in widthText = "\(Int(new))" }
+        .onChange(of: windowHeightStored) { new in heightText = "\(Int(new))" }
+    }
+
+    private func refreshSyncStatus() {
+        guard let server = (NSApp.delegate as? AppDelegate)?.syncServer else { return }
+        syncRunning = server.isRunning
+        syncPort = server.port
+        syncPeerCount = server.peerCount
+        pairingCode = server.pairingCode
+        if let exp = server.pairingExpiresAt {
+            pairingRemaining = max(0, Int(exp.timeIntervalSinceNow))
+        } else {
+            pairingRemaining = 0
+        }
+        pairedDevices = SyncStorage.listPairedDevices()
+            .sorted { ($0.lastSeen ?? .distantPast) > ($1.lastSeen ?? .distantPast) }
+    }
+
+    private func pairingCard(code: String, remaining: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Enter this code on your phone")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                ForEach(Array(code.enumerated()), id: \.offset) { _, ch in
+                    Text(String(ch))
+                        .font(.system(size: 22, weight: .semibold, design: .monospaced))
+                        .frame(width: 28, height: 36)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.accentColor.opacity(0.12))
+                        )
+                }
+                Spacer()
+                Text("\(remaining)s")
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(remaining <= 10 ? Color.red : .secondary)
+            }
+            Button("Cancel") {
+                (NSApp.delegate as? AppDelegate)?.syncServer.cancelPairing()
+                refreshSyncStatus()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor.opacity(0.4), lineWidth: 1)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.accentColor.opacity(0.04))
+                )
+        )
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
+    private func pairedDeviceRow(_ device: SyncStorage.PairedDevice) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "iphone")
+                .frame(width: 22)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(device.name)
+                    .font(.system(size: 13))
+                if let seen = device.lastSeen {
+                    Text("Last seen \(relativeShort(seen))")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Button {
+                SyncStorage.removePairedDevice(id: device.id)
+                refreshSyncStatus()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary.opacity(0.7))
+            }
+            .buttonStyle(.plain)
+            .help("Unpair this device")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
+    private func relativeShort(_ d: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f.localizedString(for: d, relativeTo: Date())
     }
 
     private func sectionHeader(_ title: String) -> some View {
@@ -1986,6 +2041,37 @@ private struct SettingsPageView: View {
             Toggle("", isOn: wrapped)
                 .toggleStyle(.switch)
                 .labelsHidden()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+    }
+
+    /// Numeric input row used for Window width/height. The TextField
+    /// commits its value when the user presses Enter; `onCommit` is
+    /// responsible for both applying it and refreshing the text from the
+    /// clamped/persisted stored value (so out-of-range entries snap back).
+    private func dimensionRow(
+        icon: String,
+        title: String,
+        text: Binding<String>,
+        onCommit: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .frame(width: 22)
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.system(size: 13))
+            Spacer()
+            TextField("", text: text)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 72)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .onSubmit { onCommit() }
+            Text("px")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 4)

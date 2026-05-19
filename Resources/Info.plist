@@ -28,5 +28,11 @@
     <string>NSApplication</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Copaste uses Accessibility to paste the selected clip into your active app.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Copaste discovers and syncs clipboard with paired devices on your local network.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_copaste._tcp</string>
+    </array>
 </dict>
 </plist>
